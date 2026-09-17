@@ -1,0 +1,423 @@
+"""Streaming voice changer.
+
+Call :meth:`VoiceChanger.process` with successive blocks of audio; it returns
+the same number of samples each time, delayed by
+:attr:`VoiceChanger.latency_samples`.  The block size is free and may vary,
+which is what a real-time audio callback needs.
+
+Pipeline for one block::
+
+    high-pass -> F0 track -> pitch marks -> PSOLA grains -> loudness match -> limiter
+
+Voiced and unvoiced audio take deliberately different routes.  Voiced audio is
+rebuilt grain by grain; unvoiced audio is overlap-added at 50% with the same
+Hann window, which reconstructs it exactly.  Consonants therefore stay as
+crisp as they were recorded instead of acquiring the pitched buzz that gives
+most voice changers away.
+"""
+from __future__ import annotations
+
+import numpy as np
+from scipy import signal
+
+from .config import VoiceProfile
+from .dsp.epochs import EpochTracker
+from .dsp.f0 import YinF0Tracker
+from .dsp.psola import Mark, build_grain, grain_half_length, nearest_mark
+from .dsp.util import (
+    BiquadHighpass,
+    OverlapAccumulator,
+    RingBuffer,
+    RmsMatcher,
+    soft_clip,
+)
+
+#: Pitch is re-estimated this often.  Fine enough to follow speech intonation,
+#: coarse enough that tracking costs well under 2% of a core.
+F0_HOP_SECONDS = 0.005
+
+#: Spacing of the pseudo pitch marks used where there is no pitch to lock to.
+UNVOICED_HOP_SECONDS = 0.006
+
+#: Random spread applied to unvoiced grain spacing, as a fraction of the hop.
+#: Grains laid at a fixed rate stamp that rate onto the audio as an amplitude
+#: modulation -- measured at +17 dB over the noise floor at 167 Hz, i.e. an
+#: audible buzz on every fricative, which is exactly the tell this engine
+#: exists to avoid.  Spreading the spacing turns that line into broadband
+#: noise far below the signal.  Reconstruction stays exact regardless of
+#: spacing, because overlap-add divides by the window sum it actually got.
+UNVOICED_JITTER = 0.25
+
+#: How hard unvoiced synthesis is pulled back onto the analysis grid each mark.
+#: Leaving a voiced run generally leaves synthesis up to half a period out of
+#: step, and only exact alignment makes unvoiced audio a true passthrough.
+#: Snapping would put a step in the middle of a consonant, so it is eased back
+#: instead -- fast enough to converge inside a short fricative, slow enough
+#: that the implied time-warp stays far below anything audible.
+UNVOICED_RELOCK = 0.45
+
+#: Random numbers are generated in fixed-size chunks for the same reason.
+NOISE_CHUNK = 4096
+
+
+class VoiceChanger:
+    """Real-time pitch and formant shifter.
+
+    Parameters
+    ----------
+    sample_rate:
+        Input/output rate in Hz.  44100 or 48000 are typical.
+    profile:
+        Settings; see :class:`natvox.config.VoiceProfile`.
+    """
+
+    def __init__(self, sample_rate: int, profile: VoiceProfile | None = None) -> None:
+        self.sample_rate = int(sample_rate)
+        self.profile = profile or VoiceProfile()
+
+        p = self.profile
+        self._pitch_ratio = p.pitch_ratio
+        self._formant_ratio = p.formant_ratio
+
+        self._f0 = YinF0Tracker(sample_rate, p.f0_min, p.f0_max)
+        self._epochs = EpochTracker()
+        self._highpass = BiquadHighpass(sample_rate, p.highpass_hz)
+        self._loudness = RmsMatcher(sample_rate)
+        self._f0_hop = max(1, int(round(F0_HOP_SECONDS * sample_rate)))
+        self._unvoiced_hop = max(8, int(round(UNVOICED_HOP_SECONDS * sample_rate)))
+
+        # Worst-case grain reach decides the delay: emitting a sample needs
+        # every grain that overlaps it, and the grain furthest ahead was cut
+        # from input one further grain-length beyond that.
+        # The tracker clamps periods to its own tau_max, which rounds up past
+        # sample_rate/f0_min; budgeting from the nominal value leaves the
+        # longest grains a couple of samples short of their buffer.
+        longest_period = float(self._f0.tau_max)
+        self._max_half = max(
+            grain_half_length(longest_period, self._pitch_ratio, self._formant_ratio),
+            int(round(self._unvoiced_hop * (1.0 + UNVOICED_JITTER))),
+        )
+        # Grains are laid down centred on their target, and lowering formants
+        # stretches them, so the furthest a grain reaches past its centre is
+        # the grain half-length divided by the formant ratio.
+        self._max_window_half = int(
+            np.ceil(self._max_half / min(self._formant_ratio, 1.0))
+        ) + 1
+        # Emitting a sample needs every grain that overlaps it, and the last
+        # of those cannot be placed until its mark exists -- which waits on
+        # both the buffer reaching the grain's far edge and pitch tracking
+        # resolving that far ahead.  One pitch hop of margin keeps the budget
+        # off the boundary, where it would otherwise depend on block size.
+        # Phase-locking is allowed to pull a mark back by up to
+        # search_fraction of a period, so the newest mark can sit that much
+        # earlier than predicted -- and grain coverage reaches that much less
+        # far ahead than the gate above suggests.
+        epoch_slack = int(np.ceil(self._epochs.search_fraction * longest_period))
+        self._latency = (
+            self._max_window_half
+            + max(self._max_half, self._f0.lookahead + self._f0_hop)
+            + epoch_slack
+            + self._f0_hop
+        )
+
+        capacity = max(1 << 14, 8 * self._latency)
+        self._in = RingBuffer(capacity)
+        self._dry = RingBuffer(capacity)
+        self._acc = OverlapAccumulator(capacity)
+
+        self._gain = 10.0 ** (p.output_gain_db / 20.0)
+        nyquist = sample_rate * 0.5
+        self._breath_sos = signal.butter(
+            2, [min(1500.0, nyquist * 0.9) / nyquist, min(7000.0, nyquist * 0.95) / nyquist],
+            btype="bandpass", output="sos",
+        )
+        env_tc = 0.010
+        alpha = float(np.exp(-1.0 / (env_tc * sample_rate)))
+        self._env_b, self._env_a = [1.0 - alpha], [1.0, -alpha]
+        self._reset_state()
+
+    # ------------------------------------------------------------------ setup
+    def _reset_state(self) -> None:
+        self._primed = False
+        self._frames: list = []
+        self._frame_hint = 0
+        self._marks: list[Mark] = []
+        self._mark_hint = 0
+        self._f0_pos = self._f0.half
+        self._last_mark = 0
+        self._last_voiced = False
+        self._synth_pos: float | None = None
+        self._out_pos = 0
+        self._breath_zi = np.zeros((self._breath_sos.shape[0], 2))
+        self._breath_env_zi = np.zeros(1)
+        # Separate streams: sharing one generator would interleave the two
+        # draw sequences differently depending on how many marks a given block
+        # happened to produce, making the output block-size dependent.
+        self._jitter_rng = np.random.default_rng(0x5EED)
+        self._noise_rng = np.random.default_rng(0xB2EA7)
+        self._noise = np.zeros(0)
+
+    def reset(self) -> None:
+        """Clear all state; use between unrelated streams."""
+        self._f0.reset()
+        self._epochs.reset()
+        self._highpass = BiquadHighpass(self.sample_rate, self.profile.highpass_hz)
+        self._loudness = RmsMatcher(self.sample_rate)
+        self._in = RingBuffer(self._in._buf.size)
+        self._dry = RingBuffer(self._dry._buf.size)
+        self._acc = OverlapAccumulator(self._acc._sig.size)
+        self._reset_state()
+
+    @property
+    def latency_samples(self) -> int:
+        """Delay from input to output, in samples."""
+        return self._latency
+
+    @property
+    def latency_ms(self) -> float:
+        return 1000.0 * self._latency / self.sample_rate
+
+    # ---------------------------------------------------------------- process
+    def process(self, block: np.ndarray) -> np.ndarray:
+        """Transform one block and return the same number of samples."""
+        x = np.asarray(block, dtype=np.float64).reshape(-1)
+        if not self._primed:
+            pad = np.zeros(self._latency)
+            self._in.push(pad)
+            self._dry.push(pad)
+            self._primed = True
+
+        filtered = self._highpass(x)
+        self._in.push(filtered)
+        self._dry.push(filtered)
+
+        self._track_pitch()
+        self._extend_marks()
+        self._synthesise()
+
+        n = x.size
+        dry = self._dry.view(self._out_pos, self._out_pos + n)
+        if self.profile.is_identity:
+            wet = dry
+        else:
+            wet = self._acc.read(self._out_pos, self._out_pos + n)
+            wet = self._loudness(dry, wet)
+            if self.profile.breathiness > 0.0:
+                wet = self._add_breath(wet)
+        self._out_pos += n
+        self._prune()
+        return soft_clip(wet * self._gain)
+
+    def flush(self) -> np.ndarray:
+        """Remaining output once the input has ended (``latency_samples`` long)."""
+        return self.process(np.zeros(self._latency))
+
+    # --------------------------------------------------------------- internals
+    def _track_pitch(self) -> None:
+        f0, end = self._f0, self._in.end
+        while self._f0_pos + f0.lookahead <= end:
+            start = self._f0_pos - f0.half
+            segment = self._in.view(start, start + f0.span)
+            self._frames.append(f0.estimate(segment, self._f0_pos))
+            self._f0_pos += self._f0_hop
+
+    def _frame_at(self, position: float):
+        """Most recent pitch observation at or before ``position``.
+
+        Falling back to the newest frame when ``position`` runs ahead is
+        deliberate: F0 moves slowly enough that a few milliseconds of staleness
+        is harmless, and it keeps pitch tracking from adding to the delay.
+        """
+        frames = self._frames
+        if not frames:
+            return None
+        i = min(self._frame_hint, len(frames) - 1)
+        while i + 1 < len(frames) and frames[i + 1].position <= position:
+            i += 1
+        while i > 0 and frames[i].position > position:
+            i -= 1
+        self._frame_hint = i
+        return frames[i]
+
+    def _extend_marks(self) -> None:
+        """Place analysis pitch marks as far ahead as the buffer allows.
+
+        A mark is only created once pitch tracking has actually reached its
+        position.  Reusing a stale estimate would work acoustically -- F0
+        barely moves in a few milliseconds -- but it would make the result
+        depend on how the caller chunked its audio, since a larger block
+        delivers fresher pitch data for the very same mark.  Identical input
+        must give identical output whatever the block size.
+        """
+        end = self._in.end
+        f0 = self._f0
+        while True:
+            seed = self._frame_at(self._last_mark)
+            if seed is None:
+                return
+
+            # Rough guess only, to find out which pitch frame governs the mark.
+            if seed.voiced:
+                guess = float(np.clip(seed.period, f0.tau_min, f0.tau_max))
+            else:
+                guess = self._unvoiced_hop * (1.0 + UNVOICED_JITTER)
+            probe = self._last_mark + int(round(guess))
+            if not self._frames or self._frames[-1].position < probe:
+                return  # pitch is not yet resolved that far ahead
+
+            frame = self._frame_at(probe)
+            if frame.voiced:
+                period = float(np.clip(frame.period, f0.tau_min, f0.tau_max))
+                half = grain_half_length(period, self._pitch_ratio, self._formant_ratio)
+                # locate() correlates a half-period window across a +-30%
+                # search, so it reaches a little past the predicted mark.
+                reach = max(half, int(round(period * 0.85)))
+                predicted = self._last_mark + int(round(period))
+                if predicted + reach > end:
+                    return
+                if self._last_voiced:
+                    mark = self._epochs.locate(self._in, predicted, self._last_mark, period)
+                else:
+                    mark = self._epochs.bootstrap(self._in, self._last_mark, period)
+                mark = max(mark, self._last_mark + 1)
+            else:
+                period = float(self._unvoiced_hop)
+                # Test the worst-case gap before drawing, so a draw is never
+                # consumed by a mark we then decline to create.
+                widest = int(round(self._unvoiced_hop * (1.0 + UNVOICED_JITTER)))
+                if self._last_mark + widest + self._unvoiced_hop > end:
+                    return
+                spread = 1.0 + float(self._jitter_rng.uniform(-UNVOICED_JITTER, UNVOICED_JITTER))
+                mark = self._last_mark + max(8, int(round(self._unvoiced_hop * spread)))
+
+            self._marks.append(Mark(mark, period, frame.voiced))
+            self._last_mark = mark
+            self._last_voiced = frame.voiced
+
+    def _synthesise(self) -> None:
+        """Lay grains down at the shifted spacing."""
+        marks = self._marks
+        if not marks:
+            return
+        if self._synth_pos is None:
+            self._synth_pos = float(marks[0].position)
+
+        limit = float(marks[-1].position)
+        shift_unvoiced = self.profile.shift_unvoiced
+        alpha = self._formant_ratio
+        ratio = self._pitch_ratio
+        view = self._in.view
+
+        while self._synth_pos <= limit:
+            idx = nearest_mark(marks, self._synth_pos, self._mark_hint)
+            self._mark_hint = idx
+            mark = marks[idx]
+
+            # Split the target position into a whole-sample slot and the
+            # remainder, which is carried inside the grain as a phase ramp.
+            base = int(np.floor(self._synth_pos))
+            frac = float(self._synth_pos - base)
+
+            if mark.voiced:
+                half = grain_half_length(mark.period, ratio, alpha)
+                grain, window = build_grain(view, mark.position, half, alpha, frac)
+                # Voiced grains are pitch-synchronous, so they stay in phase
+                # with each other even after resampling.
+                coherent = True
+                step = mark.period / ratio
+            else:
+                if idx + 1 >= len(marks):
+                    # The gap to the next mark is random, so it cannot be
+                    # guessed: waiting keeps synthesis exactly on the analysis
+                    # grid instead of drifting and having to be pulled back.
+                    break
+                # Grain length stays fixed while spacing varies, which keeps
+                # neighbouring grains overlapping enough to normalise cleanly.
+                half = self._unvoiced_hop
+                formant = alpha if shift_unvoiced else 1.0
+                grain, window = build_grain(view, mark.position, half, formant, frac)
+                coherent = abs(formant - 1.0) < 1e-4
+                step = 0.0  # set below, from the true gap to the next mark
+
+            self._acc.add(base - window.size // 2, grain, window, coherent)
+
+            if mark.voiced:
+                self._synth_pos += step
+            else:
+                # Step by the real gap to the next mark, then ease back onto
+                # the analysis grid so an unvoiced stretch stays a
+                # sample-accurate copy rather than a slowly sliding one.
+                target = float(marks[idx + 1].position)
+                self._synth_pos += target - mark.position
+                self._synth_pos += UNVOICED_RELOCK * (target - self._synth_pos)
+
+    def _add_breath(self, wet: np.ndarray) -> np.ndarray:
+        """Mix in a little aspiration noise.
+
+        A large upward pitch shift spreads the harmonics apart and thins the
+        spectrum out; real voices fill that region with breath.  The noise is
+        band-limited to where aspiration actually lives (roughly 1.5-7 kHz)
+        rather than being broadband, so it reads as breath instead of as hiss,
+        and it is gated by the signal's own envelope so silence stays silent.
+        """
+        amount = self.profile.breathiness
+        noise = self._draw_noise(wet.size)
+        shaped, self._breath_zi = signal.sosfilt(self._breath_sos, noise, zi=self._breath_zi)
+        envelope, self._breath_env_zi = signal.lfilter(
+            self._env_b, self._env_a, np.abs(wet), zi=self._breath_env_zi
+        )
+        return wet + shaped * envelope * (amount * 0.5)
+
+    def _draw_noise(self, count: int) -> np.ndarray:
+        """Noise drawn in fixed chunks, so blocking cannot change the result."""
+        while self._noise.size < count:
+            self._noise = np.concatenate(
+                [self._noise, self._noise_rng.standard_normal(NOISE_CHUNK)]
+            )
+        out, self._noise = self._noise[:count], self._noise[count:]
+        return out
+
+    def _prune(self) -> None:
+        """Release buffers and list entries that nothing can reach back to.
+
+        The retention point is derived from what is still referenced rather
+        than from a fixed margin.  Trimming even slightly too early is not a
+        loud failure -- the ring buffer zero-fills what is missing -- but it
+        silently corrupts whichever grain straddles the boundary, and since
+        trimming happens on block boundaries, *which* grain that is depends on
+        the caller's block size.
+        """
+        # Marks first: synthesis never revisits anything before its cursor, so
+        # that cursor is the floor for how much history is still live.
+        if len(self._marks) > 8:
+            cutoff = self._out_pos - 2 * self._max_half
+            drop = 0
+            while (drop < self._mark_hint
+                   and drop < len(self._marks) - 4
+                   and self._marks[drop].position < cutoff):
+                drop += 1
+            if drop:
+                del self._marks[:drop]
+                self._mark_hint -= drop
+        if len(self._frames) > 8:
+            cutoff = self._out_pos - 2 * self._max_half
+            drop = 0
+            while (drop < self._frame_hint
+                   and drop < len(self._frames) - 4
+                   and self._frames[drop].position < cutoff):
+                drop += 1
+            if drop:
+                del self._frames[:drop]
+                self._frame_hint -= drop
+
+        # Oldest input sample any remaining consumer can still ask for: the
+        # earliest surviving grain, the pitch tracker's own window, and the
+        # output cursor.
+        oldest = self._out_pos - self._max_half
+        if self._marks:
+            oldest = min(oldest, self._marks[0].position - self._max_half)
+        oldest = min(oldest, self._f0_pos - self._f0.half)
+        self._in.discard_to(oldest - self._f0_hop)
+
+        self._dry.discard_to(self._out_pos - 1)
+        self._acc.discard_to(self._out_pos - 1)
