@@ -339,6 +339,20 @@ def jitter_shimmer(audio: np.ndarray, sample_rate: int, f0_hint: float,
     its marks rather than with a glottal-closure detector.  A closure detector
     is the textbook choice and is accurate on natural speech, but PSOLA output
     carries secondary peaks from grain reuse that it mistakes for closures.
+
+    Shimmer is taken as the RMS of each period rather than its peak, which is
+    the clinical definition, and the difference matters here for a reason that
+    is easy to miss.  A peak is a statement about one sample, so it moves when
+    anything redistributes energy *inside* a period -- and every stage in this
+    engine does, without changing the amplitude at all.  Measured peak-to-peak,
+    a plain passthrough through the 60 Hz rumble filter appears to lose 39% of
+    a voice's shimmer, purely from that filter's phase response at 120 Hz; the
+    same signal measured by period RMS comes back at 1.00x.  That artifact was
+    reported as a real engine limitation ("shimmer flattened to 0.55x") until
+    a passthrough was measured against itself and returned the same number.
+    Comparing amplitude variation across a transformation that deliberately
+    rebuilds the waveform requires a measure that does not depend on the
+    waveform's shape.
     """
     from natvox.dsp.epochs import EpochTracker
     from natvox.dsp.util import RingBuffer
@@ -358,7 +372,8 @@ def jitter_shimmer(audio: np.ndarray, sample_rate: int, f0_hint: float,
             break
         periods.append(gap)
         segment = audio[mark:nxt]
-        amplitudes.append(float(np.max(np.abs(segment))) if segment.size else 0.0)
+        amplitudes.append(float(np.sqrt(np.mean(segment * segment)))
+                          if segment.size else 0.0)
         mark = nxt
 
     if len(periods) < 8:
@@ -521,3 +536,100 @@ def added_energy_db(base: np.ndarray, test: np.ndarray,
     if reference <= EPS:
         return float("nan")
     return 10.0 * np.log10(max(float(np.mean((b - a) ** 2)), EPS) / reference)
+
+
+def out_of_band_db(wet: np.ndarray, sample_rate: int, edge_hz: float) -> float:
+    """Energy above ``edge_hz`` relative to the whole, in dB.
+
+    The clean way to ask whether something clipped.  Feed the engine a signal
+    with nothing above ``edge_hz`` and everything found up there afterwards was
+    manufactured: waveshaping folds a band-limited signal into a new harmonic
+    series that reaches to Nyquist, while scaling it by a smooth gain -- which
+    is all a limiter does -- puts essentially nothing there.
+
+    This exists because the metrics above cannot tell the two apart.  Harmonic
+    distortion lands on exact multiples of F0, so :func:`harmonic_split_db`
+    counts it as signal and *improves* as the clipping gets worse: driving a
+    sustained vowel from 0.2 to 1.8 of full scale moved it from -54.9 dB to
+    -57.5 dB while audible distortion went from nothing to -13 dB.
+    """
+    spectrum = np.abs(np.fft.rfft(wet * np.hanning(wet.size))) ** 2
+    freqs = np.fft.rfftfreq(wet.size, 1.0 / sample_rate)
+    above = freqs > edge_hz
+    total = float(np.sum(spectrum))
+    if total <= EPS:
+        return float("nan")
+    return 10.0 * np.log10(max(float(np.sum(spectrum[above])), EPS) / total)
+
+
+def manufactured_band_db(quiet: np.ndarray, loud: np.ndarray, sample_rate: int,
+                         edge_hz: float) -> float:
+    """Out-of-band energy that arrives *with the level*, as a share, in dB.
+
+    :func:`out_of_band_db` on its own cannot be compared between voices: a
+    formant shift moves the signal's own band up, and aspiration noise is
+    deliberately up there.  Both are present at any level.  Subtracting the
+    share measured at a safe drive leaves only what the loud run added, which
+    is the part that is clipping.
+    """
+    above_loud = 10.0 ** (out_of_band_db(loud, sample_rate, edge_hz) / 10.0)
+    above_quiet = 10.0 ** (out_of_band_db(quiet, sample_rate, edge_hz) / 10.0)
+    return 10.0 * np.log10(max(above_loud - above_quiet, 1e-12))
+
+
+def level_distortion_db(engine, audio: np.ndarray, sample_rate: int,
+                        quiet: float = 0.1, loud: float = 0.6,
+                        floor_db: float = -40.0) -> float:
+    """How much of a loud output cannot be explained as a quiet one, re-gained.
+
+    Every artifact metric above this one is blind to clipping, and blind in the
+    worst possible way: waveshaping distortion lands on exact multiples of F0,
+    so :func:`harmonic_split_db` counts it as *signal* and the number improves
+    as the distortion gets worse.  Measured on a sustained vowel driven from
+    0.2 to 1.8 of full scale, inharmonic energy read -54.9 dB rising to
+    -57.5 dB while total harmonic distortion went from inaudible to -13 dB.
+
+    So this asks a different question.  Run the same audio quietly and loudly,
+    normalise both, and fit a slowly-varying gain between them.  Whatever is
+    left over is what the engine did that a level change cannot account for.
+    A limiter scores near zero here however hard it is working, because a
+    limiter *is* a gain; a clipper cannot, because waveshaping changes the
+    shape.
+
+    ``engine(audio) -> audio`` is called twice.  Both default levels stay
+    under the limiter's ceiling on purpose: this asks whether the engine is
+    linear where it has promised to be, and a limiter earning its keep above
+    the ceiling would read here as a failure.  :func:`out_of_band_db` is the
+    one for what happens above it.
+
+    Only samples within ``floor_db`` of the reference's loudest are counted.
+    The engine has a noise gate with an absolute floor -- voicing detection has
+    to, since it is judging a microphone and not a signal -- so near silence it
+    is legitimately level-dependent, and measuring there reports a correct
+    design decision as a defect.  Without the gate this read -45 dB on speech
+    for an engine that measures -112 dB on a vowel.
+    """
+    reference = np.asarray(engine(audio * quiet), dtype=np.float64) / quiet
+    test = np.asarray(engine(audio * loud), dtype=np.float64) / loud
+    n = min(reference.size, test.size)
+    reference, test = reference[:n], test[:n]
+
+    # Least-squares gain per sample, smoothed over 20 ms -- long enough that
+    # it cannot absorb a waveform change, short enough to follow any limiter
+    # worth using.
+    window = max(8, int(0.020 * sample_rate))
+    kernel = np.ones(window) / window
+    numerator = np.convolve(test * reference, kernel, mode="same")
+    denominator = np.convolve(reference * reference, kernel, mode="same")
+    gain = numerator / np.maximum(denominator, EPS)
+
+    envelope = np.convolve(reference * reference, kernel, mode="same")
+    live = envelope > np.max(envelope) * 10.0 ** (floor_db / 10.0)
+    if live.sum() < window:
+        return float("nan")
+
+    residual = (test - gain * reference)[live]
+    energy = float(np.mean(test[live] ** 2))
+    if energy <= EPS:
+        return float("nan")
+    return 10.0 * np.log10(max(float(np.mean(residual * residual)), EPS) / energy)

@@ -51,6 +51,18 @@ class VoiceProfile:
         Search range for pitch tracking.  ``f0_min`` sets the latency floor --
         the engine needs about two periods of the lowest pitch it must handle,
         so raising it is the main way to get faster response.
+
+        ``f0_max`` is not symmetric with it: it costs neither latency nor
+        measurable time, and it only has to be wrong once.  Raising the voice
+        to shout takes an adult well past conversational pitch, and a true F0
+        above the ceiling does not read as "too high" -- the tracker finds its
+        best match at twice the period and reports an octave *down*, which is
+        the growl heard when a voice changer is shouted into.  A sweep to
+        460 Hz produced 27 octave errors in 388 voiced frames at a ceiling of
+        400 Hz and one at 500.  The default is set high enough to cover
+        shouting rather than conversation, and measured not to cost anything
+        for it: at 85, 110 and 200 Hz a ceiling of 1000 Hz gives the same zero
+        errors as 500, and fricatives stay unvoiced in 195 frames out of 195.
     shift_unvoiced:
         Whether to also shift fricatives and other unvoiced sounds.  Off by
         default: unvoiced audio is then passed through bit-exact, which is the
@@ -87,7 +99,7 @@ class VoiceProfile:
     pitch_semitones: float = 0.0
     formant_semitones: float = 0.0
     f0_min: float = 75.0
-    f0_max: float = 500.0
+    f0_max: float = 800.0
     shift_unvoiced: bool = False
     breathiness: float = 0.0
     intonation: float = 1.0

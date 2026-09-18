@@ -29,6 +29,7 @@ from .dsp.resample import GrainResampler
 from .dsp.util import (
     BiquadHighpass,
     OverlapAccumulator,
+    PeakLimiter,
     RingBuffer,
     RmsMatcher,
     TiltFilter,
@@ -111,6 +112,28 @@ TRANSIENT_WINDOW_SECONDS = 0.0005
 #: speaker's own contour, which is not a constant and would be a lie in both
 #: directions.
 INTONATION_TC = 1.50
+
+#: Output ceiling, and how far ahead the limiter looks to reach it.
+#:
+#: 1.5 ms is enough for the gain to arrive before any peak a voice can produce
+#: and short enough to disappear into a latency budget that is already 60 ms.
+#: The release is long enough not to pump on a syllable and short enough that
+#: one shout does not duck the sentence after it.
+#:
+#: The engine used to rely on a static soft clipper here, which distorts by
+#: construction: -31 dB of total harmonic distortion at full scale, -18 dB at
+#: 1.4x, -13 dB at 2x.  Shouting into a microphone reaches all three, and none
+#: of the artifact metrics could see any of it, because waveshaping products
+#: land on exact multiples of F0 and get counted as signal.
+LIMITER_CEILING = 0.97
+LIMITER_LOOKAHEAD_MS = 1.5
+LIMITER_RELEASE_MS = 80.0
+
+#: Where the soft clipper now sits: above the limiter's guaranteed ceiling, so
+#: it is a backstop against arithmetic surprises rather than part of the sound.
+#: It is kept because "the output cannot exceed 1.0" should not depend on a
+#: proof holding.
+SAFETY_CEILING = 0.995
 
 #: Aspiration noise level at ``breathiness == 1.0``, relative to the local
 #: envelope of the signal *within the aspiration band*.  Larger than it looks:
@@ -208,6 +231,8 @@ class VoiceChanger:
         self._resampler = GrainResampler(self._formant_ratio)
         self._unity_resampler = GrainResampler(1.0)
         self._tilt = TiltFilter(sample_rate, p.tilt_db, TILT_PIVOT_HZ)
+        self._limiter = PeakLimiter(sample_rate, LIMITER_CEILING,
+                                    LIMITER_LOOKAHEAD_MS, LIMITER_RELEASE_MS)
         nyquist = sample_rate * 0.5
         # A high-pass followed by a low-pass rather than a true Butterworth
         # band-pass. The shape barely differs for a noise bed, and the browser
@@ -281,6 +306,7 @@ class VoiceChanger:
         self._highpass = BiquadHighpass(self.sample_rate, self.profile.highpass_hz)
         self._loudness = RmsMatcher(self.sample_rate)
         self._tilt = TiltFilter(self.sample_rate, self.profile.tilt_db, TILT_PIVOT_HZ)
+        self._limiter.reset()
         self._in = RingBuffer(self._in._buf.size)
         self._dry = RingBuffer(self._dry._buf.size)
         self._acc = OverlapAccumulator(self._acc._sig.size)
@@ -289,8 +315,14 @@ class VoiceChanger:
 
     @property
     def latency_samples(self) -> int:
-        """Delay from input to output, in samples."""
-        return self._latency
+        """Delay from input to output, in samples.
+
+        The analysis delay plus the limiter's look-ahead.  The two are kept
+        apart internally because only the first is padding that has to be fed
+        through the buffers at construction; the second is a delay line the
+        limiter carries itself.
+        """
+        return self._latency + self._limiter.latency_samples
 
     @property
     def latency_ms(self) -> float:
@@ -331,11 +363,14 @@ class VoiceChanger:
                 wet = self._add_aspiration(wet, voiced)
         self._out_pos += n
         self._prune()
-        return soft_clip(wet * self._gain)
+        # Limit, then clip.  The limiter is what keeps a shout intact; the
+        # clipper is what keeps a bug from reaching the speakers.
+        return soft_clip(self._limiter(wet * self._gain),
+                         ceiling=SAFETY_CEILING, knee=LIMITER_CEILING)
 
     def flush(self) -> np.ndarray:
         """Remaining output once the input has ended (``latency_samples`` long)."""
-        return self.process(np.zeros(self._latency))
+        return self.process(np.zeros(self.latency_samples))
 
     # --------------------------------------------------------------- internals
     def _track_pitch(self) -> None:

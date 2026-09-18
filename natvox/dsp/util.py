@@ -358,6 +358,108 @@ class RmsMatcher:
         return wet * gain
 
 
+class PeakLimiter:
+    """Look-ahead peak limiter: reduces gain instead of reshaping the waveform.
+
+    A static soft clipper is the wrong tool for a voice that gets loud.  It has
+    no delay and needs no state, and in exchange it distorts: measured on a
+    200 Hz sine, the clipper this replaces produced -31 dB of total harmonic
+    distortion at full scale, -18 dB at 1.4x and -13 dB at 2x.  Shouting into a
+    microphone reaches all three.  Worse, none of the engine's artifact metrics
+    could see it -- waveshaping puts its products on exact multiples of F0, so
+    inharmonic energy *improved* as the distortion got worse.
+
+    This holds the audio back by ``lookahead_ms`` and spends that delay finding
+    out what is coming, so the gain is already where it needs to be when the
+    peak arrives.  Nothing is reshaped; the whole waveform is scaled by a
+    smooth envelope, which is why it stays transparent at gain reductions a
+    clipper would tear the voice apart at.
+
+    The ceiling is guaranteed, not approximated, and the guarantee is the
+    reason for the two smoothing stages rather than one filter:
+
+    * ``m[k]``, the minimum required gain over the window ``[k - look, k]``, is
+      never above what sample ``k - look`` needs.
+    * the output gain is the mean of ``m`` over the last ``look`` samples, and
+      every one of those windows contains ``k - look``.
+
+    So the gain applied to a sample is never above the gain that sample
+    required, and it is continuous because a box average of anything is.  A
+    one-pole attack in place of the box would be smoother still and would let
+    peaks through, which is the one thing this is for.
+
+    Release is an exponential decay of the gain *reduction*, computed in closed
+    form rather than by recursion so the whole block vectorises:
+    ``y[k] = max(r[k], a*y[k-1])`` unrolls to ``a^k * cummax(r[j] * a^-j)``.
+    Blocks are processed in bounded chunks so ``a^-j`` cannot grow large enough
+    to cost precision.
+    """
+
+    #: Longest run of samples handled in one pass.  ``a^-j`` reaches only
+    #: ``exp(chunk / (release * rate))`` -- 8.4 at the defaults -- so the
+    #: closed form above stays exact.
+    CHUNK = 4096
+
+    def __init__(self, sample_rate: int, ceiling: float = 0.97,
+                 lookahead_ms: float = 1.5, release_ms: float = 80.0) -> None:
+        self.ceiling = float(ceiling)
+        self.look = max(1, int(round(lookahead_ms * sample_rate / 1000.0)))
+        self.box = self.look
+        self.release = float(np.exp(-1000.0 / (release_ms * sample_rate)))
+        self.reset()
+
+    @property
+    def latency_samples(self) -> int:
+        return self.look
+
+    def reset(self) -> None:
+        self._delay = np.zeros(self.look)
+        self._gain_history = np.ones(self.look)
+        self._mean_history = np.ones(max(self.box - 1, 0))
+        self._held = 0.0                       # last gain *reduction*, 0 = none
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        if x.size == 0:
+            return x
+        if x.size <= self.CHUNK:
+            return self._chunk(x)
+        return np.concatenate([self._chunk(x[i:i + self.CHUNK])
+                               for i in range(0, x.size, self.CHUNK)])
+
+    def _chunk(self, x: np.ndarray) -> np.ndarray:
+        n = x.size
+        ceiling = self.ceiling
+        # 1 where the sample fits under the ceiling, ceiling/|x| where it does
+        # not.  Written as a ratio of maxima so there is no division by zero
+        # and no branch.
+        required = ceiling / np.maximum(np.abs(x), ceiling)
+        reduction = 1.0 - required
+
+        decay = self.release ** np.arange(n, dtype=np.float64)
+        held = np.maximum.accumulate(reduction / decay)
+        y = decay * np.maximum(held, self._held * self.release)
+        self._held = float(y[-1])
+        gain = 1.0 - y
+
+        # Trailing minimum over look+1 samples, then a trailing box average.
+        joined = np.concatenate([self._gain_history, gain])
+        floors = np.lib.stride_tricks.sliding_window_view(joined, self.look + 1)
+        floors = floors.min(axis=-1)
+        self._gain_history = joined[-self.look:]
+
+        if self.box > 1:
+            spread = np.concatenate([self._mean_history, floors])
+            smoothed = np.lib.stride_tricks.sliding_window_view(spread, self.box)
+            smoothed = smoothed.mean(axis=-1)
+            self._mean_history = spread[-(self.box - 1):]
+        else:
+            smoothed = floors
+
+        buffered = np.concatenate([self._delay, x])
+        self._delay = buffered[n:]
+        return buffered[:n] * smoothed
+
+
 def soft_clip(x: np.ndarray, ceiling: float = 0.98, knee: float = 0.75) -> np.ndarray:
     """Saturate only what would otherwise clip.
 

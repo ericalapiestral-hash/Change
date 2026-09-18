@@ -93,8 +93,9 @@ PARAMETERS: tuple[Parameter, ...] = (
               "shift consonants too; off passes them through bit-exact"),
     Parameter("f0_min", "Hz", 40.0, 400.0, 75.0, False,
               "lowest pitch tracked; raising it is the main way to cut latency"),
-    Parameter("f0_max", "Hz", 100.0, 1200.0, 500.0, False,
-              "highest pitch tracked"),
+    Parameter("f0_max", "Hz", 100.0, 1200.0, 800.0, False,
+              "highest pitch tracked; costs nothing, and too low turns a "
+              "shout into a growl an octave down"),
     Parameter("onset_lookahead_ms", "ms", 0.0, 30.0, 8.0, False,
               "how far ahead voicing is resolved; costs exactly this in latency"),
     Parameter("highpass_hz", "Hz", 0.0, 500.0, 60.0, False,

@@ -317,7 +317,7 @@ reconstructs to −322 dB. It has **not** been run against a real checkpoint.
 
 ```bash
 pip install -e '.[dev]'
-pytest                      # 267 tests
+pytest                      # 328 tests
 python tools/bench.py       # artifact measurements
 
 cd web && npm install && npm test     # 100 more, including the live path
@@ -358,6 +358,12 @@ off" is a statement that can be checked rather than an impression.
   −55 dB. That is the feature working, not a regression — but it does mean the
   artifact columns are not comparable between a preset that breathes and one
   that does not.
+- **The output stage limits rather than clips**, so being shouted into costs
+  gain reduction and not distortion: driving a band-limited vowel to four
+  times full scale manufactures −80 to −83 dB of out-of-band energy, against
+  −28 dB for the static soft clipper this replaced. It costs 1.5 ms of the
+  latency below. What it cannot fix is a microphone that clipped before the
+  engine saw it.
 - **Large shifts degrade.** Past roughly ±8 semitones of pitch or ±5 of
   formants, no time-domain method stays transparent, because the vocal-tract
   response being stretched stops matching a physically plausible speaker. The
@@ -380,7 +386,16 @@ off" is a statement that can be checked rather than an impression.
   Run `tools/bench.py` against your own recordings before trusting the numbers
   for your voice; the browser interface's capture-and-loop is the fastest way
   to hear the difference on your own.
-- **Shimmer is still flattened** on upward shifts (amplitude variation returns
-  at about 0.55x of the input), because repeating a grain repeats its
-  amplitude. The timing half of the same problem is fixed; this half is
-  measured and left.
+- **Amplitude variation comes back a little high, not low.** Shimmer returns
+  at 0.97–1.81× of the input depending on preset, and the engine invents
+  0.11–0.32% of it from a perfectly steady input against 1.7–3.7% for a real
+  voice. The largest figures are the downward shifts, where skipping grains
+  decorrelates one pulse's amplitude from the next.
+
+  This entry used to say shimmer was *flattened* to 0.55×. That number was an
+  artifact of measuring peak amplitude per period, which moves whenever
+  anything redistributes energy inside a period — a plain passthrough through
+  the 60 Hz rumble filter measured 0.61× that way. Measured on period RMS, the
+  same passthrough returns 1.00×. The lesson is in `jitter_shimmer`: a
+  measurement compared across a transformation that rebuilds the waveform must
+  not depend on the waveform's shape.

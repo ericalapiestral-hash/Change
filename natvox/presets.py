@@ -11,6 +11,10 @@ from __future__ import annotations
 
 from .config import VoiceProfile
 
+#: Every preset tracks to 800 Hz.  The ceiling costs nothing -- not latency,
+#: not measurable time, not accuracy at low pitch -- and a voice raised to
+#: shout goes past a conversational ceiling, where the tracker locks onto twice
+#: the period and reports an octave down.  See VoiceProfile.f0_max.
 PRESETS: dict[str, VoiceProfile] = {
     "off": VoiceProfile(),
     # 0.02 rather than the 0.03 this carried before aspiration was keyed off
@@ -19,15 +23,15 @@ PRESETS: dict[str, VoiceProfile] = {
     # the level actually measured here (-45.9 dB of added energy on voiced
     # audio against -44.8 dB before).
     "male_to_female": VoiceProfile(
-        pitch_semitones=7.0, formant_semitones=2.6, f0_min=70.0, f0_max=400.0,
+        pitch_semitones=7.0, formant_semitones=2.6, f0_min=70.0, f0_max=800.0,
         shift_unvoiced=True, breathiness=0.02,
     ),
     "female_to_male": VoiceProfile(
-        pitch_semitones=-7.0, formant_semitones=-2.6, f0_min=110.0, f0_max=500.0,
+        pitch_semitones=-7.0, formant_semitones=-2.6, f0_min=110.0, f0_max=800.0,
         shift_unvoiced=True,
     ),
     "male_to_female_subtle": VoiceProfile(
-        pitch_semitones=4.5, formant_semitones=1.8, f0_min=70.0, f0_max=400.0,
+        pitch_semitones=4.5, formant_semitones=1.8, f0_min=70.0, f0_max=800.0,
     ),
     # The presets above move pitch and vocal-tract size and nothing else,
     # which is the transparent thing to do and also the reason they still
@@ -56,25 +60,25 @@ PRESETS: dict[str, VoiceProfile] = {
     # changes *whose* voice it is, and no amount of them will.  That needs a
     # conversion model -- see natvox.neural.
     "female": VoiceProfile(
-        pitch_semitones=7.0, formant_semitones=2.6, f0_min=70.0, f0_max=400.0,
+        pitch_semitones=7.0, formant_semitones=2.6, f0_min=70.0, f0_max=800.0,
         shift_unvoiced=True, breathiness=0.12, intonation=1.22, tilt_db=2.0,
     ),
     "female_soft": VoiceProfile(
-        pitch_semitones=4.5, formant_semitones=1.8, f0_min=70.0, f0_max=400.0,
+        pitch_semitones=4.5, formant_semitones=1.8, f0_min=70.0, f0_max=800.0,
         breathiness=0.08, intonation=1.15, tilt_db=1.2,
     ),
     "female_bright": VoiceProfile(
-        pitch_semitones=7.5, formant_semitones=3.2, f0_min=70.0, f0_max=420.0,
+        pitch_semitones=7.5, formant_semitones=3.2, f0_min=70.0, f0_max=800.0,
         shift_unvoiced=True, breathiness=0.16, intonation=1.28, tilt_db=3.5,
     ),
     "female_to_male_subtle": VoiceProfile(
-        pitch_semitones=-4.5, formant_semitones=-1.8, f0_min=110.0, f0_max=500.0,
+        pitch_semitones=-4.5, formant_semitones=-1.8, f0_min=110.0, f0_max=800.0,
     ),
     # Same speaker, different apparent age/size -- these stay well inside the
     # transparent range and are the ones that hold up best under scrutiny.
     "deeper": VoiceProfile(pitch_semitones=-2.5, formant_semitones=-1.2, f0_min=65.0),
     "brighter": VoiceProfile(pitch_semitones=1.5, formant_semitones=1.0),
-    "younger": VoiceProfile(pitch_semitones=3.0, formant_semitones=2.2, f0_max=550.0),
+    "younger": VoiceProfile(pitch_semitones=3.0, formant_semitones=2.2, f0_max=800.0),
     # Disguise: enough change to break recognition, no cartoon quality.
     "anonymous": VoiceProfile(
         pitch_semitones=-3.5, formant_semitones=2.0, f0_min=70.0, shift_unvoiced=True,

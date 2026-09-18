@@ -16,8 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import natvox                                  # noqa: E402
 from evaluate import (                         # noqa: E402
     added_energy_db, creak_voicing, formant_error_db, harmonic_split_db,
-    hnr_db, jitter_shimmer, onset_lag_ms, pitch_error_cents, pitch_range_st,
-    spectral_tilt_db, unvoiced_error_db,
+    hnr_db, jitter_shimmer, manufactured_band_db, onset_lag_ms,
+    pitch_error_cents, pitch_range_st, spectral_tilt_db, unvoiced_error_db,
 )
 from synth_speech import (                     # noqa: E402
     VOWELS, creak_fall, glottal_source, human_vowel, onset_train, utterance,
@@ -65,6 +65,20 @@ def voice_cues(profile, dry_utt, voiced, unvoiced, wet_utt) -> dict:
     return cues
 
 
+#: Highest frequency in the overdrive test signal.  Anything above it in the
+#: output was made by the engine.
+BAND_EDGE_HZ = 5000.0
+
+
+def band_limited_vowel(f0: float = 120.0, seconds: float = 1.0, sr: int = SR):
+    """A vowel with nothing above :data:`BAND_EDGE_HZ`, for the overdrive test."""
+    from scipy import signal as sig
+
+    x = sustained(f0, "a", seconds, sr)
+    x = sig.sosfilt(sig.butter(8, BAND_EDGE_HZ / (sr * 0.5), output="sos"), x)
+    return x / max(np.max(np.abs(x)), 1e-9)
+
+
 def run(name: str, profile, dry_utt, truth, dry_sus, f0_sus, boundary) -> dict:
     r, alpha = profile.pitch_ratio, profile.formant_ratio
 
@@ -84,11 +98,29 @@ def run(name: str, profile, dry_utt, truth, dry_sus, f0_sus, boundary) -> dict:
     unvoiced = eroded & loud
     guard = slice(int(0.05 * SR), -int(0.05 * SR))
 
-    onsets, onset_truth, creak, creak_truth, human, human_region, human_jitter = boundary
+    (onsets, onset_truth, creak, creak_truth, human, human_region, human_jitter,
+     human_shimmer, band_limited) = boundary
     onset_mean, _ = onset_lag_ms(onsets, SR, profile, onset_truth["onsets"])
     creak_share, creak_flips = creak_voicing(creak, SR, profile, creak_truth["creak"])
     wet_human = natvox.process_array(human, SR, profile, block_size=512)
-    wet_jitter, _ = jitter_shimmer(wet_human, SR, 120.0 * r, human_region)
+    wet_jitter, wet_shimmer = jitter_shimmer(wet_human, SR, 120.0 * r, human_region)
+    # Drive a band-limited vowel hard and see how much energy appears above
+    # its band that was not there at a safe level.  The *increase* rather than
+    # the amount: aspiration noise and a formant shift both put legitimate
+    # energy up there, and only the part that arrives with the level is
+    # clipping.  It is the only way to see clipping at all -- its products are
+    # harmonic, so every other column here counts them as signal.
+    edge = BAND_EDGE_HZ * max(alpha, 1.0)
+    trim = slice(int(0.1 * SR), -int(0.1 * SR))
+    # Aspiration off for this one.  It is deliberately out of band, it scales
+    # with the signal, and it is large: leaving it in means subtracting two big
+    # numbers and the measurement bottoms out around -42 dB with nothing to do
+    # with clipping.  Breath is measured in its own column.
+    dry_air = profile.replace(breathiness=0.0)
+    shout = manufactured_band_db(
+        natvox.process_array(band_limited * 0.5, SR, dry_air, block_size=512)[trim],
+        natvox.process_array(band_limited * 4.0, SR, dry_air, block_size=512)[trim],
+        SR, edge)
 
     return {
         "preset": name,
@@ -97,6 +129,8 @@ def run(name: str, profile, dry_utt, truth, dry_sus, f0_sus, boundary) -> dict:
         "creak_pct": 100.0 * creak_share,
         "creak_flips": creak_flips,
         "jitter_ratio": wet_jitter / human_jitter if human_jitter else float("nan"),
+        "shimmer_ratio": wet_shimmer / human_shimmer if human_shimmer else float("nan"),
+        "shout_db": shout,
         "pitch_st": profile.pitch_semitones,
         "formant_st": profile.formant_semitones,
         "latency_ms": natvox.VoiceChanger(SR, profile).latency_ms,
@@ -117,8 +151,9 @@ def main(argv: list[str]) -> int:
     dry_sus = sustained(f0_sus)
     human = human_vowel(SR)
     human_region = (int(0.08 * SR), human.size - int(0.08 * SR))
-    human_jitter, _ = jitter_shimmer(human, SR, 120.0, human_region)
-    boundary = (*onset_train(SR), *creak_fall(SR), human, human_region, human_jitter)
+    human_jitter, human_shimmer = jitter_shimmer(human, SR, 120.0, human_region)
+    boundary = (*onset_train(SR), *creak_fall(SR), human, human_region,
+                human_jitter, human_shimmer, band_limited_vowel())
 
     wanted = argv or [
         "off", "brighter", "deeper", "younger", "male_to_female_subtle",
@@ -128,7 +163,7 @@ def main(argv: list[str]) -> int:
 
     header = (f"{'preset':<22}{'pitch':>6}{'form':>6}{'lat':>7}{'rtf':>6}"
               f"{'cents':>7}{'formΔdB':>9}{'inharm':>8}{'HNR':>6}{'unvcd':>7}"
-              f"{'onset':>7}{'creak':>12}{'jitter':>8}")
+              f"{'onset':>7}{'creak':>12}{'jitter':>8}{'shimmer':>9}{'shout':>8}")
     print(header)
     print("-" * len(header))
     rows = []
@@ -142,7 +177,8 @@ def main(argv: list[str]) -> int:
               f"{row['hnr_out']:>6.1f}{row['unvoiced_db']:>7.2f}"
               f"{row['onset_ms']:>6.1f}m"
               f"{row['creak_pct']:>7.1f}%/{row['creak_flips']:<3d}"
-              f"{row['jitter_ratio']:>7.2f}x")
+              f"{row['jitter_ratio']:>7.2f}x{row['shimmer_ratio']:>8.2f}x"
+              f"{row['shout_db']:>8.0f}")
     cued = [r for r in rows if {"range_x", "tilt_db", "asp_voiced"} & r.keys()]
     if cued:
         cue_header = (f"\n{'preset':<22}{'range':>8}{'tilt':>9}"
@@ -163,6 +199,15 @@ def main(argv: list[str]) -> int:
               "fricative it is just hiss.")
     print(f"\nreference (unprocessed sustained vowel): "
           f"inharmonic {rows[0]['inharm_in']:.1f} dB, HNR {rows[0]['hnr_in']:.1f} dB")
+    print("shimmer = amplitude irregularity returned, as a multiple of the input's, "
+          "measured on\nperiod RMS rather than period peak so that a phase change "
+          "cannot masquerade as one.\nshout = extra energy above the signal's own "
+          "band when a vowel is driven to 4x full scale\nrather than 0.5x, as a "
+          "share of the output, in dB,\nwith aspiration off so the number is "
+          "about the output stage. "
+          "That is what clipping sounds like, and it is invisible to every\nother "
+          "column: waveshaping products are harmonic, so they get counted as "
+          "signal.\n")
     print("onset = ms from a true vowel onset to the first voiced pitch mark; "
           "creak = share of a\ncreaky phrase-end routed to the unvoiced path, "
           "and how often it flips there and back.\njitter = period-to-period "
