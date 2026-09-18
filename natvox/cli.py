@@ -65,6 +65,19 @@ def _add_voice_options(parser: argparse.ArgumentParser) -> None:
                         help="leave consonants exactly as recorded")
 
 
+def _add_device_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--rate", type=int, default=48000)
+    parser.add_argument("--block", type=int, default=256,
+                        help="device buffer in frames; smaller is lower latency")
+    parser.add_argument("--input-device", default=None,
+                        help="index or name; see `natvox devices`")
+    parser.add_argument("--output-device", default=None,
+                        help="index or name; see `natvox devices`")
+    parser.add_argument("--exclusive", action="store_true",
+                        help="WASAPI exclusive mode: skips the Windows mixer, "
+                             "and locks the device to this program")
+
+
 def _warn(profile: VoiceProfile) -> None:
     for note in profile.warnings():
         print(f"note: {note}", file=sys.stderr)
@@ -112,16 +125,46 @@ def cmd_process(args) -> int:
     return 0
 
 
+def print_devices() -> int:
+    """Every device, best host API first, with what its driver claims.
+
+    The order is the point.  PortAudio offers the same microphone once per
+    host API it can reach, and on Windows the first copy it offers is the MME
+    one -- an interface from 1991 that goes through the system mixer.  Picking
+    the WASAPI copy of the same hardware is usually worth more milliseconds
+    than anything else in this program, and nothing in the list says so unless
+    something sorts it.
+    """
+    from .app.backend import AudioUnavailable, list_devices
+
+    try:
+        devices = list_devices()
+    except AudioUnavailable as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if not devices:
+        print("no audio devices found: PortAudio is installed and can see "
+              "nothing.\nPlug something in, or install a virtual cable if the "
+              "voice is going to another program.", file=sys.stderr)
+        return 1
+    print(f"{'#':>4}  {'in':>3} {'out':>3}  {'claims':>8}  {'rate':>7}  device")
+    for d in devices:
+        print(f"{d.index:>4}  {d.inputs:>3} {d.outputs:>3}  "
+              f"{d.claimed_ms:>6.1f}ms  {d.default_sample_rate:>7.0f}  {d.label}")
+    print("\nBest first.  'claims' is the driver's own estimate of its buffers "
+          "and leaves out\nwhatever sits between it and this program; "
+          "`--loopback` measures the whole path.", file=sys.stderr)
+    return 0
+
+
 def cmd_devices(args) -> int:
     try:
-        from .realtime import list_devices
-        print(list_devices())
+        return print_devices()
     except (ImportError, OSError) as exc:
         print(f"cannot query audio devices: {exc}", file=sys.stderr)
         print("install the realtime extra and PortAudio: "
               "pip install 'natvox[realtime]'", file=sys.stderr)
         return 1
-    return 0
 
 
 def cmd_live(args) -> int:
@@ -131,8 +174,18 @@ def cmd_live(args) -> int:
     _warn(profile)
     changer = VoiceChanger(args.rate, profile)
     processor = StreamProcessor(changer, channels=args.channels, dry_wet=args.dry_wet)
-    session = RealtimeSession(processor, args.input_device, args.output_device,
-                              args.block)
+    input_device = _device_arg(args.input_device)
+    output_device = _device_arg(args.output_device)
+    extra = None
+    if args.exclusive:
+        from .app.backend import AudioUnavailable, exclusive_settings
+        try:
+            extra = exclusive_settings(input_device, output_device)
+        except AudioUnavailable as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+    session = RealtimeSession(processor, input_device, output_device,
+                              args.block, extra_settings=extra)
     print(f"engine latency {processor.latency_ms:.1f} ms, "
           f"total with device buffers ~{session.total_latency_ms:.1f} ms")
     print("running -- press Ctrl-C to stop")
@@ -157,9 +210,55 @@ def cmd_serve(args) -> int:
     return serve_main(args.host, args.port, args.verbose)
 
 
+def _device_arg(value):
+    """A device is an index or a name; argparse cannot tell which was meant."""
+    if value is None:
+        return None
+    text = str(value)
+    try:
+        return int(text)
+    except ValueError:
+        return text
+
+
+def cmd_loopback(args) -> int:
+    """Measure the whole path, out of one device and back in through another.
+
+    This is the measurement that decides whether a virtual cable is worth
+    replacing.  Reported numbers do not settle it: every layer has an estimate
+    of its own buffers and none of them can see the layer below.  Sending a
+    sweep out and timing its return measures all of them at once, including
+    the ones that do not report anything.
+    """
+    from . import api
+    from .app import loopback
+    from .app.backend import AudioUnavailable
+
+    try:
+        trip = loopback.through_devices(
+            _device_arg(args.input_device), _device_arg(args.output_device),
+            sample_rate=args.rate, block_size=args.block,
+            attempts=args.attempts, exclusive=args.exclusive,
+        )
+    except AudioUnavailable as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(trip.summary())
+    if not trip.delays_ms:
+        return 1
+    engine = api.Session(args.rate, _profile_from_args(args)).latency_ms
+    print(f"\nthe converter adds {engine:.1f} ms on top of this, so a listener "
+          f"would hear you\n{trip.measured_ms + engine:.1f} ms late.")
+    return 0
+
+
 def cmd_app(args) -> int:
     from .app.core import Studio
 
+    if args.devices:
+        return print_devices()
+    if args.loopback:
+        return cmd_loopback(args)
     if args.check:
         studio = Studio()
         for block in (64, 128, 256, 512):
@@ -198,12 +297,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("devices", help="list audio devices").set_defaults(func=cmd_devices)
 
     live = sub.add_parser("live", help="convert the microphone in real time")
-    live.add_argument("--rate", type=int, default=48000)
-    live.add_argument("--block", type=int, default=256,
-                      help="device buffer in frames; smaller is lower latency")
+    _add_device_options(live)
     live.add_argument("--channels", type=int, default=1, help="output channels")
-    live.add_argument("--input-device", default=None)
-    live.add_argument("--output-device", default=None)
     live.add_argument("--dry-wet", type=float, default=1.0,
                       help="1.0 is fully converted, 0.0 is the delayed original")
     _add_voice_options(live)
@@ -221,10 +316,19 @@ def build_parser() -> argparse.ArgumentParser:
     app = sub.add_parser("app", help="the desktop program")
     app.add_argument("--check", action="store_true",
                      help="measure whether this computer can keep up, and exit")
+    app.add_argument("--devices", action="store_true",
+                     help="list audio devices, best host API first, and exit")
+    app.add_argument("--loopback", action="store_true",
+                     help="measure the real round trip out of one device and "
+                          "back in through another; loop them together first")
     app.add_argument("--probe", metavar="WS_URL",
                      help="measure what converting on another machine would cost")
     app.add_argument("--seconds", type=float, default=2.0,
                      help="how long --check measures for")
+    _add_device_options(app)
+    app.add_argument("--attempts", type=int, default=5,
+                     help="how many times --loopback sends the probe")
+    _add_voice_options(app)
     app.set_defaults(func=cmd_app)
     return parser
 

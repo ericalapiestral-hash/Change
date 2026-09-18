@@ -26,6 +26,37 @@ class AudioUnavailable(RuntimeError):
     """No usable audio backend, with an explanation of what to install."""
 
 
+#: PortAudio's name for the modern Windows API, spelled exactly once.
+WASAPI = "Windows WASAPI"
+
+#: How much delay each host API tends to add, lowest first.
+#:
+#: This matters more than any other setting in the program and is the one most
+#: likely to be wrong by default.  PortAudio offers the same physical device
+#: once per host API it can reach, and on Windows it picks MME unless told
+#: otherwise -- an interface from 1991 that goes through the system mixer and
+#: several buffers on the way.  WASAPI talks to the audio engine directly, and
+#: in exclusive mode it bypasses the mixer as well.
+#:
+#: The engine's own delay is about 60 ms.  The host API can add more than that
+#: without anyone choosing it, which is why the picker sorts on this and why
+#: `natvox-cli --devices` prints what each one claims.
+HOST_API_RANK = {
+    "ASIO": 0,                      # Windows, needs a driver from the vendor
+    "Core Audio": 0,                # macOS
+    "JACK Audio Connection Kit": 0,
+    "ALSA": 1,
+    WASAPI: 1,
+    "Windows WDM-KS": 1,            # kernel streaming: low, but exclusive only
+    "Windows DirectSound": 3,
+    "OSS": 3,
+    "MME": 4,
+}
+
+#: Used for anything not in the table: neither preferred nor penalised.
+UNKNOWN_RANK = 2
+
+
 @dataclass(frozen=True)
 class Device:
     """One audio device, as the picker needs it."""
@@ -36,10 +67,28 @@ class Device:
     inputs: int
     outputs: int
     default_sample_rate: float
+    #: What the driver claims its buffers cost, in milliseconds.  An estimate,
+    #: and usually an optimistic one -- it leaves out whatever sits between the
+    #: driver and this program.  `natvox.app.loopback` measures the truth.
+    low_input_ms: float = 0.0
+    low_output_ms: float = 0.0
+
+    @property
+    def rank(self) -> int:
+        return HOST_API_RANK.get(self.host_api, UNKNOWN_RANK)
+
+    @property
+    def claimed_ms(self) -> float:
+        """Whichever direction this device is usable in."""
+        return self.low_input_ms if self.inputs else self.low_output_ms
 
     @property
     def label(self) -> str:
         return f"{self.name} ({self.host_api})"
+
+    @property
+    def detail(self) -> str:
+        return f"{self.label} -- claims {self.claimed_ms:.1f} ms"
 
 
 def _sounddevice():
@@ -60,18 +109,95 @@ def _sounddevice():
     return sd
 
 
-def list_devices() -> list[Device]:
-    """Every device PortAudio can see."""
+def list_devices(sort: bool = True) -> list[Device]:
+    """Every device PortAudio can see, lowest-latency host API first.
+
+    Sorted because the same microphone appears several times -- once per host
+    API -- and which copy is picked decides more of the delay than anything
+    else the program does.  A picker that lists them in PortAudio's order
+    reliably puts the worst one first.
+    """
     sd = _sounddevice()
     out = []
     apis = sd.query_hostapis()
     for index, info in enumerate(sd.query_devices()):
         api = apis[info["hostapi"]]["name"] if info["hostapi"] < len(apis) else "?"
-        out.append(Device(index, info["name"], api,
-                          int(info["max_input_channels"]),
-                          int(info["max_output_channels"]),
-                          float(info["default_samplerate"])))
+        out.append(Device(
+            index, info["name"], api,
+            int(info["max_input_channels"]), int(info["max_output_channels"]),
+            float(info["default_samplerate"]),
+            1000.0 * float(info.get("default_low_input_latency") or 0.0),
+            1000.0 * float(info.get("default_low_output_latency") or 0.0),
+        ))
+    if sort:
+        out.sort(key=lambda d: (d.rank, d.claimed_ms, d.name))
     return out
+
+
+def host_api_of(device) -> str:
+    """Host API name for a device index, or '' when it cannot be resolved.
+
+    Every failure is the same answer.  PortAudio has its own exception type
+    for a device index that is out of range, so a list of the exceptions worth
+    catching here is a list that will be wrong on somebody else's machine --
+    and the only caller that matters, :func:`exclusive_settings`, treats "I do
+    not know what this is" and "this is not WASAPI" identically anyway.
+    """
+    if device is None:
+        return ""
+    try:
+        sd = _sounddevice()
+        info = sd.query_devices(device)
+        apis = sd.query_hostapis()
+        index = int(info["hostapi"])
+        return apis[index]["name"] if index < len(apis) else ""
+    except Exception:                           # noqa: BLE001 - see above
+        return ""
+
+
+def exclusive_settings(input_device=None, output_device=None):
+    """WASAPI exclusive-mode settings for a device pair.
+
+    Exclusive mode hands the device to this program alone and skips the
+    Windows audio engine's mixer, which is where a good part of the delay on
+    Windows lives -- and, on a shared device, a sample-rate conversion nobody
+    asked for.  The cost is that nothing else can use that device while this
+    runs, which is why it is a choice rather than the default.
+
+    Raises rather than quietly falling back, because a request for exclusive
+    mode that is silently ignored looks exactly like a measurement saying
+    exclusive mode does not help.
+    """
+    sd = _sounddevice()
+    names = {host_api_of(input_device), host_api_of(output_device)}
+    names.discard("")
+    if not names or not names <= {WASAPI}:
+        raise AudioUnavailable(
+            "exclusive mode is a WASAPI feature; pick the WASAPI copy "
+            "of both devices, or turn it off"
+        )
+    return sd.WasapiSettings(exclusive=True)
+
+
+def reported_latency_ms(input_device=None, output_device=None) -> float:
+    """What the two drivers claim their buffers cost, together.
+
+    Best effort on purpose: this number exists to be subtracted from a measured
+    round trip, and a device that will not answer should leave the remainder
+    unexplained rather than stop the measurement.
+    """
+    try:
+        sd = _sounddevice()
+    except AudioUnavailable:
+        return 0.0
+    total = 0.0
+    for device, kind in ((input_device, "input"), (output_device, "output")):
+        try:
+            info = sd.query_devices(device, kind)
+            total += 1000.0 * float(info.get(f"default_low_{kind}_latency") or 0.0)
+        except Exception:                        # noqa: BLE001 - best effort
+            continue
+    return total
 
 
 def default_devices() -> tuple[int | None, int | None]:
@@ -90,10 +216,12 @@ class LiveBackend:
     kind = "live"
 
     def __init__(self, input_device=None, output_device=None,
-                 block_size: int = 256) -> None:
+                 block_size: int = 256, exclusive: bool = False) -> None:
         self.input_device = input_device
         self.output_device = output_device
         self.block_size = int(block_size)
+        #: See :func:`exclusive_settings`.
+        self.exclusive = bool(exclusive)
         self._session: RealtimeSession | None = None
 
     @property
@@ -102,8 +230,11 @@ class LiveBackend:
 
     def start(self, processor: StreamProcessor) -> None:
         _sounddevice()                          # fail with a sentence, early
+        extra = (exclusive_settings(self.input_device, self.output_device)
+                 if self.exclusive else None)
         session = RealtimeSession(processor, self.input_device,
-                                  self.output_device, self.block_size)
+                                  self.output_device, self.block_size,
+                                  extra_settings=extra)
         try:
             session.start()
         except Exception as exc:                # noqa: BLE001 - see below
@@ -122,6 +253,11 @@ class LiveBackend:
     def device_latency_ms(self) -> float:
         """What the device buffers add, in and out."""
         return 2000.0 * self.block_size / 48000.0
+
+    @property
+    def claimed_latency_ms(self) -> float:
+        """What the drivers themselves claim, which is usually less."""
+        return reported_latency_ms(self.input_device, self.output_device)
 
 
 class OfflineBackend:

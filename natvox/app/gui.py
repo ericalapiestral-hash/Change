@@ -207,6 +207,22 @@ class Window(QtWidgets.QWidget):
         self.refresh_devices_button.clicked.connect(self.rescan_devices)
         grid.addWidget(self.refresh_devices_button, 2, 2)
 
+        # Exclusive mode and the round-trip measurement belong together: the
+        # first is the biggest lever on the delay, and the second is the only
+        # thing that says whether pulling it did anything.
+        self.exclusive = QtWidgets.QCheckBox("Exclusive mode (Windows, WASAPI devices)")
+        self.exclusive.setToolTip(
+            "Skips the Windows mixer, and locks the device to this program "
+            "while it runs.")
+        self.exclusive.toggled.connect(self._exclusive_toggled)
+        self.loopback_button = QtWidgets.QPushButton("Measure the real delay")
+        self.loopback_button.setToolTip(
+            "Loop the output back to the microphone first -- through a cable, "
+            "or through a virtual one.")
+        self.loopback_button.clicked.connect(self.measure_round_trip)
+        grid.addWidget(self.exclusive, 3, 0, 1, 2)
+        grid.addWidget(self.loopback_button, 3, 2)
+
         self.remote = QtWidgets.QCheckBox("Convert on another machine")
         self.remote.toggled.connect(self._remote_toggled)
         self.remote_url = QtWidgets.QLineEdit()
@@ -215,9 +231,9 @@ class Window(QtWidgets.QWidget):
             lambda text: setattr(self.studio.settings, "remote_url", text))
         self.measure_button = QtWidgets.QPushButton("Measure the link")
         self.measure_button.clicked.connect(self.measure_link)
-        grid.addWidget(self.remote, 3, 0, 1, 3)
-        grid.addWidget(self.remote_url, 4, 0, 1, 2)
-        grid.addWidget(self.measure_button, 4, 2)
+        grid.addWidget(self.remote, 4, 0, 1, 3)
+        grid.addWidget(self.remote_url, 5, 0, 1, 2)
+        grid.addWidget(self.measure_button, 5, 2)
         return box
 
     def _transport_box(self) -> QtWidgets.QWidget:
@@ -257,6 +273,7 @@ class Window(QtWidgets.QWidget):
         if settings.voice in self.studio.voices:
             self.voice.setCurrentText(settings.voice)
         self.block_size.setCurrentText(str(settings.block_size))
+        self.exclusive.setChecked(bool(settings.exclusive))
         self.remote.setChecked(bool(settings.use_remote))
         self.remote_url.setText(settings.remote_url)
         self.rescan_devices()
@@ -314,6 +331,13 @@ class Window(QtWidgets.QWidget):
         if self.studio.running:
             self.restart()
 
+    def _exclusive_toggled(self, on: bool) -> None:
+        self.studio.settings.exclusive = bool(on)
+        if self._loading:
+            return
+        if self.studio.running:
+            self.restart()
+
     def _remote_toggled(self, on: bool) -> None:
         self.studio.settings.use_remote = bool(on)
         if self._loading:
@@ -344,12 +368,22 @@ class Window(QtWidgets.QWidget):
             self.report("No audio devices found. Plug something in and press Rescan.")
 
     # -- running -----------------------------------------------------------
-    def _live_backend(self) -> LiveBackend:
+    def _sync_devices(self) -> None:
+        """Copy the two combo boxes into the settings.
+
+        Both starting the stream and measuring the round trip need the chosen
+        devices, and a combo box that has been changed without the stream being
+        restarted has not written them back yet.
+        """
         settings = self.studio.settings
         settings.input_device = self.input_device.currentData()
         settings.output_device = self.output_device.currentData()
+
+    def _live_backend(self) -> LiveBackend:
+        self._sync_devices()
+        settings = self.studio.settings
         return LiveBackend(settings.input_device, settings.output_device,
-                           settings.block_size)
+                           settings.block_size, settings.exclusive)
 
     def toggle(self) -> None:
         self.stop() if self.studio.running else self.start()
@@ -426,6 +460,11 @@ class Window(QtWidgets.QWidget):
         self.report("measuring...")
         block = int(self.block_size.currentText())
         self._worker.run(lambda: self.studio.self_test(block))
+
+    def measure_round_trip(self) -> None:
+        self._sync_devices()
+        self.report("measuring -- listen for a short sweep...")
+        self._worker.run(self.studio.measure_round_trip)
 
     def measure_link(self) -> None:
         url = self.remote_url.text().strip()

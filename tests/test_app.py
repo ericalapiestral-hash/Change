@@ -17,7 +17,11 @@ import pytest
 
 import natvox
 from natvox import api
-from natvox.app.backend import AudioUnavailable, OfflineBackend, list_devices
+from natvox.app import backend as backend_module
+from natvox.app.backend import (AudioUnavailable, Device, LiveBackend,
+                                OfflineBackend, exclusive_settings,
+                                host_api_of, list_devices,
+                                reported_latency_ms)
 from natvox.app.core import MachineReport, Settings, Studio
 from natvox.realtime import StreamProcessor
 
@@ -162,6 +166,162 @@ class TestDevices:
         assert isinstance(devices, list)
         for device in devices:
             assert device.label
+
+
+class FakeSoundDevice:
+    """Just enough PortAudio to answer questions about devices.
+
+    There is no sound card in CI, and the thing being tested here is not
+    PortAudio -- it is which of the several copies of one microphone the
+    program offers first, which is a decision made entirely from the names and
+    numbers PortAudio hands over.
+    """
+
+    def __init__(self, devices, apis) -> None:
+        self._devices = devices
+        self._apis = apis
+
+    def query_hostapis(self):
+        return [{"name": name} for name in self._apis]
+
+    def query_devices(self, device=None, kind=None):
+        if device is None and kind is None:
+            return list(self._devices)
+        if device is None:
+            raise ValueError("no default device")
+        try:
+            return self._devices[int(device)]
+        except IndexError:
+            # PortAudio's own type, not one of Python's.  A narrow list of
+            # exceptions to catch would pass against an IndexError here and
+            # fail on the machine it was written for.
+            raise self.PortAudioError(f"Error querying device {device}") from None
+
+    class PortAudioError(Exception):
+        pass
+
+    class WasapiSettings:
+        def __init__(self, exclusive=False) -> None:
+            self.exclusive = exclusive
+
+
+def fake_device(name, api_index, **extra):
+    info = {
+        "name": name, "hostapi": api_index,
+        "max_input_channels": 2, "max_output_channels": 2,
+        "default_samplerate": 48000.0,
+        "default_low_input_latency": 0.01,
+        "default_low_output_latency": 0.01,
+    }
+    info.update(extra)
+    return info
+
+
+@pytest.fixture
+def windows_devices(monkeypatch):
+    """One microphone, offered four times, as Windows really offers it."""
+    apis = ["MME", "Windows DirectSound", "Windows WASAPI", "ASIO"]
+    devices = [
+        fake_device("Yeti", 0, default_low_input_latency=0.09,
+                    default_low_output_latency=0.09),
+        fake_device("Yeti", 1, default_low_input_latency=0.04,
+                    default_low_output_latency=0.04),
+        fake_device("Yeti", 2, default_low_input_latency=0.003,
+                    default_low_output_latency=0.003),
+        fake_device("Yeti ASIO", 3, default_low_input_latency=0.002,
+                    default_low_output_latency=0.002),
+    ]
+    fake = FakeSoundDevice(devices, apis)
+    monkeypatch.setattr(backend_module, "_sounddevice", lambda: fake)
+    return fake
+
+
+class TestHostApis:
+    """Which copy of a device gets picked decides more of the delay than
+    anything else in the program, and PortAudio's own order puts the worst
+    one first."""
+
+    def test_the_best_host_api_is_offered_first(self, windows_devices):
+        devices = list_devices()
+        assert [d.host_api for d in devices] == [
+            "ASIO", "Windows WASAPI", "Windows DirectSound", "MME"]
+
+    def test_portaudio_s_own_order_is_still_available(self, windows_devices):
+        assert [d.index for d in list_devices(sort=False)] == [0, 1, 2, 3]
+
+    def test_a_host_api_nobody_has_heard_of_is_neither_favoured_nor_buried(self):
+        unknown = Device(0, "x", "Some New API", 2, 2, 48000.0)
+        assert unknown.rank == backend_module.UNKNOWN_RANK
+        assert Device(0, "x", "MME", 2, 2, 48000.0).rank > unknown.rank
+        assert Device(0, "x", "ASIO", 2, 2, 48000.0).rank < unknown.rank
+
+    def test_each_one_says_what_it_claims(self, windows_devices):
+        best = list_devices()[0]
+        assert best.claimed_ms == pytest.approx(2.0)
+        assert "2.0 ms" in best.detail and "ASIO" in best.detail
+
+    def test_the_two_claims_are_added_up(self, windows_devices):
+        assert reported_latency_ms(2, 2) == pytest.approx(6.0)
+
+    def test_a_device_that_will_not_answer_leaves_its_share_unexplained(
+            self, windows_devices):
+        """Best effort on purpose: this number gets subtracted from a measured
+        round trip, and a device that will not answer should leave the
+        remainder unexplained rather than stop the measurement."""
+        assert reported_latency_ms(99, 2) == pytest.approx(3.0)
+
+    def test_host_api_of_a_device_that_is_not_there_is_empty_not_a_crash(
+            self, windows_devices):
+        """PortAudio raises its own exception type for an index out of range,
+        so every failure has to be the same answer here."""
+        assert host_api_of(2) == "Windows WASAPI"
+        assert host_api_of(99) == ""
+        assert host_api_of(None) == ""
+
+    def test_a_stale_device_index_refuses_exclusive_mode_rather_than_raising(
+            self, windows_devices):
+        """A device can be unplugged between the listing and the start."""
+        with pytest.raises(AudioUnavailable) as raised:
+            exclusive_settings(99, 99)
+        assert "WASAPI" in str(raised.value)
+
+
+class TestExclusiveMode:
+    def test_it_is_granted_on_a_wasapi_pair(self, windows_devices):
+        assert exclusive_settings(2, 2).exclusive is True
+
+    @pytest.mark.parametrize("pair", [(0, 0), (0, 2), (3, 3), (None, None)])
+    def test_anything_else_is_refused_with_a_reason(self, windows_devices, pair):
+        """Silently falling back would look exactly like a measurement saying
+        exclusive mode does not help."""
+        with pytest.raises(AudioUnavailable) as raised:
+            exclusive_settings(*pair)
+        assert "WASAPI" in str(raised.value)
+
+    def test_the_backend_refuses_before_it_opens_anything(self, windows_devices):
+        backend = LiveBackend(0, 0, 256, exclusive=True)
+        with pytest.raises(AudioUnavailable):
+            backend.start(None)
+        assert not backend.running
+
+    def test_it_reaches_the_stream_as_a_setting(self, windows_devices, monkeypatch):
+        opened = {}
+
+        class Session:
+            def __init__(self, *args, **kwargs):
+                opened.update(kwargs)
+
+            def start(self):
+                pass
+
+        monkeypatch.setattr(backend_module, "RealtimeSession", Session)
+        LiveBackend(2, 2, 256, exclusive=True).start(None)
+        assert opened["extra_settings"].exclusive is True
+
+    def test_settings_remember_it(self, tmp_path):
+        path = tmp_path / "settings.json"
+        Settings(exclusive=True).save(path)
+        assert Settings.load(path).exclusive is True
 
 
 class TestRunning:

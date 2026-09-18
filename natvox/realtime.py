@@ -154,11 +154,14 @@ class RealtimeSession:
     """
 
     def __init__(self, processor: StreamProcessor, input_device=None,
-                 output_device=None, block_size: int = 256) -> None:
+                 output_device=None, block_size: int = 256,
+                 extra_settings=None) -> None:
         self.processor = processor
         self.input_device = input_device
         self.output_device = output_device
         self.block_size = int(block_size)
+        #: Host-API specific settings, e.g. ``sounddevice.WasapiSettings``.
+        self.extra_settings = extra_settings
         self._stream = None
 
     @property
@@ -181,6 +184,7 @@ class RealtimeSession:
             dtype="float32",
             channels=(1, self.processor.channels),
             device=(self.input_device, self.output_device),
+            extra_settings=self.extra_settings,
             callback=self._callback,
         )
         self._stream.start()

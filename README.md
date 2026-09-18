@@ -155,8 +155,13 @@ Other properties the test suite pins down:
 ## Latency
 
 ```
-engine (below) + device buffer (2 × blocksize) = what you hear
+engine (below) + device buffer (2 × blocksize) + the path out = what you hear
 ```
+
+The first term is the only one this table is about. The last one — host API,
+system mixer, virtual cable — is often larger than either, is chosen rather
+than computed, and is measured by `natvox-cli --loopback`; see
+[Getting the voice into another program](#getting-the-voice-into-another-program).
 
 Engine latency is set by pitch, not by CPU: PSOLA needs about two periods of
 the lowest pitch it must track. `f0_min` is therefore the main latency control.
@@ -294,6 +299,11 @@ Three things it will tell you rather than make you guess:
 | **Can this computer keep up?** | Runs the engine at each buffer size and reports the *worst* block against its deadline. The average never drops out; the worst block is what clicks. |
 | **What is it costing?** | Latency, pitch, load and dropouts while it runs, live. |
 | **Is converting elsewhere worth it?** | Point it at a machine running `natvox serve` and it measures the round trip and the jitter on that link, then says what it would cost end to end. |
+| **What is the path out costing?** | Loop the output back to the input and it times a sweep going round — the device buffers, the mixer, and the virtual cable, including the parts none of them report. |
+
+It offers each device once per host API, best first, and an exclusive-mode
+switch for WASAPI; on Windows those two choices are worth more milliseconds
+than anything else in the program.
 
 ### Converting on another machine
 
@@ -312,6 +322,84 @@ own connection beats any claim made here about typical latency.
 Where it does make sense: converting files, one-way streaming where the video
 can be delayed to match, and neural conversion later — the only part of this
 that wants a GPU, and already ~160 ms by design.
+
+### Getting the voice into another program
+
+The engine's delay is only part of what a listener hears. The rest is the path:
+
+```
+engine + device buffers + host API + mixer + whatever carries it across
+```
+
+Everything after the first term is chosen rather than computed, and on Windows
+the defaults are the worst available. Two levers, in the order they are worth
+pulling:
+
+**1. Pick the right copy of the device.** PortAudio offers the same microphone
+once per host API it can reach, and its own order puts MME first — an interface
+from 1991 that goes through the system mixer. `natvox devices` sorts them best
+first and prints what each driver claims:
+
+```bash
+natvox devices              # or: natvox-cli.exe --devices
+```
+
+It prints one row per device — index, channels, what the driver claims its
+buffers cost, sample rate, name and host API — with the best host API first.
+The same microphone appears several times, once per API, and the `claims`
+column is how far apart those copies are. That column is the driver's own
+estimate and leaves out whatever sits between it and this program, which is
+why the next lever exists.
+
+**2. Measure, do not assume.** Loop the output back to the input — physically,
+or through a virtual cable with its playback end selected as the output and its
+recording end as the input — and time a sweep going round:
+
+```bash
+natvox-cli.exe --loopback --input-device 9 --output-device 12
+```
+
+It sends the sweep five times and reports the median round trip, the spread
+across the five, what the two drivers claimed, and the remainder — the part
+nothing reported, which is the mixer, the cable and any resampler in between.
+Then it adds the engine's own delay and prints the total a listener hears.
+That total is the number that matters, and it is the only one nothing else in
+the stack will tell you.
+
+`--exclusive` adds WASAPI exclusive mode, which hands the device to this
+program alone and skips the mixer; run the measurement with and without it and
+keep whichever is faster. The estimator is a matched filter on a 40 ms sweep,
+accurate to a fraction of a sample, and it returns "nothing came back" rather
+than a number when nothing did — silence, white noise, a tone and speech-shaped
+noise are all refused, because a confident wrong number is worse than none.
+
+**No numbers are quoted here because none were measured.** This environment has
+no audio hardware. The estimator is verified against signals delayed by an
+exact known number of samples (`tests/test_loopback.py`); the device path above
+it has never been run against a real device. Measure your own machine before
+believing anything about your own machine — which is the point of it.
+
+### Should we write our own virtual cable?
+
+Measure first — and on most setups the answer will be no. A virtual cable is a
+memcpy between two buffers; it has no reason to cost anything. What costs is
+the buffering around it, and existing cables expose that as a setting. If
+`--loopback` says the unexplained part is a millisecond or two, there is
+nothing there to win.
+
+If it says twenty, it is worth knowing what the alternative actually involves:
+
+| | |
+|---|---|
+| **Windows** | A WDM kernel-mode audio driver (Microsoft's `sysvad` is the starting point). To load on a normal machine it must be signed by Microsoft through Partner Center attestation, which requires an EV code-signing certificate tied to a verified legal entity — roughly $300–500/year. Unsigned, it loads only with test signing enabled: a desktop watermark and a weakened machine. A fault in it bluescreens rather than crashing a program. |
+| **macOS** | An AudioServerPlugin — user space, no kernel, a Developer ID at $99/year. BlackHole is the open-source precedent and it is a few thousand lines. |
+| **Linux** | Already solved: `pactl load-module module-null-sink sink_name=natvox`. No driver, no signing, no cost. |
+
+So the cost is not the code, on any of the three. On Windows it is a legal
+identity, an annual certificate, an attestation submission, and taking on a
+component that can take the whole machine down — for a saving this repository
+has no measurement of yet. Nothing here is built to that standard on a guess,
+which is what `--loopback` is for.
 
 ## Server
 
@@ -369,7 +457,7 @@ reconstructs to −322 dB. It has **not** been run against a real checkpoint.
 
 ```bash
 pip install -e '.[dev]'
-pytest                      # 480 tests
+pytest                      # 552 tests
 python tools/bench.py       # artifact measurements
 
 cd web && npm install && npm test     # 127 more, including the live path
@@ -452,7 +540,12 @@ off" is a statement that can be checked rather than an impression.
 - **No audio hardware was available here.** The browser build is tested end to
   end through the real AudioWorklet, but on an offline render rather than a
   live device; the Python `sounddevice` binding is untested against real
-  hardware because this environment has no PortAudio.
+  hardware because this environment has no PortAudio. The same applies to
+  `--loopback`: its estimator is tested against delays known to the sample, its
+  host-API ordering against a stand-in for what Windows reports, and neither
+  has ever met a device. **No claim is made here about what any host API,
+  mixer or virtual cable actually costs** — the tool exists precisely because
+  that has to be measured where it runs.
 - **Real speech has not been tested** — only synthesised reference signals,
   which is what makes the measurements meaningful but is not the same thing.
   Run `tools/bench.py` against your own recordings before trusting the numbers

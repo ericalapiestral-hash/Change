@@ -19,7 +19,8 @@ and one they will not.
 # A blanket collect_submodules("scipy.signal") on top of them was measured to
 # add nothing to the bundle and is the kind of line that hides a real missing
 # import behind 30 MB of things that are never loaded.
-hiddenimports = ["natvox.app.gui", "natvox.app.remote", "natvox.app.backend"]
+hiddenimports = ["natvox.app.gui", "natvox.app.remote", "natvox.app.backend",
+                 "natvox.app.loopback"]
 
 # Qt modules the window never touches.  Each is checked by an import test, so
 # adding one that is actually needed fails the build rather than the program.

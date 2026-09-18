@@ -51,6 +51,33 @@ jobs:
         working-directory: packaging
         run: .\dist\natvox\natvox-cli.exe --check --seconds 1.0
 
+      # A runner has no sound card, so "nothing to list" is the right answer
+      # and exit 1 is how both of these say it.  What is being checked is the
+      # code underneath: enumerating host APIs, and reading the per-device
+      # latency fields that only a Windows driver fills in.  Neither path can
+      # be exercised anywhere else -- there is no WASAPI on Linux.
+      - name: The device listing and the loopback measurement run on Windows
+        working-directory: packaging
+        run: |
+          # Continue, and reset the exit code at the end: "nothing to list" is
+          # exit 1, and the step wrapper turns a non-zero $LASTEXITCODE into a
+          # failed step whatever the script decided.
+          $ErrorActionPreference = "Continue"
+          foreach ($flag in @("--devices", "--loopback")) {
+            $out = (.\dist\natvox\natvox-cli.exe $flag --attempts 1 2>&1 | Out-String)
+            Write-Host "--- natvox-cli $flag ---"
+            Write-Host $out
+            if ($out -match "Traceback") {
+              $ErrorActionPreference = "Stop"
+              throw "$flag raised instead of reporting"
+            }
+            if (-not $out.Trim()) {
+              $ErrorActionPreference = "Stop"
+              throw "$flag said nothing at all"
+            }
+          }
+          $global:LASTEXITCODE = 0
+
       - name: The windowed build opens and stays open
         working-directory: packaging
         env:
@@ -83,8 +110,13 @@ jobs:
             "Built on ``windows-latest`` from ``$env:GITHUB_SHA``, $env:SIZE MB.",
             "",
             "Unzip it and run **natvox.exe**. ``natvox-cli.exe --check`` says whether",
-            "this machine can keep up; ``natvox-cli.exe --probe ws://...`` measures what",
-            "converting on another machine would cost.",
+            "this machine can keep up; ``natvox-cli.exe --devices`` lists the audio",
+            "devices best host API first (Windows offers the same microphone once per",
+            "API, and the copy it offers first is the slowest one); and",
+            "``natvox-cli.exe --loopback`` times a sweep out of the output device and",
+            "back in through the input, which is the only way to find out what the",
+            "mixer and a virtual cable really cost. ``natvox-cli.exe --probe ws://...``",
+            "measures what converting on another machine would cost instead.",
             "",
             "Before this was published the workflow ran the full test suite on Windows,",
             "then ran what it had built: the console executable had to print a real",

@@ -158,6 +158,16 @@ class TestRunning:
         assert window.studio.current()["intonation"] == pytest.approx(1.4)
         window.stop()
 
+    def test_exclusive_mode_reaches_the_settings_and_reopens_the_stream(self, window):
+        window.start()
+        pump(0.2)
+        before = len(window.backends)
+        window.exclusive.setChecked(True)
+        pump(0.2)
+        assert window.studio.settings.exclusive is True
+        assert len(window.backends) > before
+        window.stop()
+
     def test_changing_the_buffer_reopens_the_stream(self, window):
         window.start()
         pump(0.2)
@@ -251,6 +261,40 @@ class TestAnswers:
         assert wait_for(lambda: "could not reach" in window.status.text(), 20.0), \
             window.status.text()
 
+    def test_measuring_the_real_delay_reports_what_came_back(self, window,
+                                                             monkeypatch):
+        """There is no cable here, so the honest answer is that nothing came
+        back -- and it has to arrive as a sentence rather than a traceback on
+        a worker thread."""
+        window.measure_round_trip()
+        assert wait_for(lambda: "measuring" not in window.status.text(), 30.0), \
+            window.status.text()
+        text = window.status.text()
+        assert "loops round" in text or "could not open" in text \
+            or "install" in text.lower(), text
+
+    def test_measuring_the_real_delay_uses_the_chosen_devices(self, window,
+                                                              monkeypatch):
+        """The combo boxes are written back to the settings when the stream
+        opens; measuring has to do the same, or it measures the wrong pair."""
+        asked = {}
+
+        def fake(input_device=None, output_device=None, **kwargs):
+            asked.update(kwargs, input_device=input_device,
+                         output_device=output_device)
+            from natvox.app.loopback import RoundTrip
+            return RoundTrip(48000, 256, [])
+
+        monkeypatch.setattr("natvox.app.loopback.through_devices", fake)
+        window.exclusive.setChecked(True)
+        window.input_device.addItem("Cable output", 7)
+        window.input_device.setCurrentIndex(window.input_device.count() - 1)
+        window.measure_round_trip()
+        assert wait_for(lambda: bool(asked), 20.0)
+        assert asked["input_device"] == 7
+        assert asked["exclusive"] is True
+        assert asked["block_size"] == window.studio.settings.block_size
+
     def test_saving_before_anything_was_said_explains_itself(self, window):
         window.save_capture()
         assert "Nothing recorded" in window.status.text()
@@ -281,5 +325,6 @@ class TestPersistence:
             assert win.voice.currentText() == "female"
             assert win._readouts["pitch_semitones"].text() == "6.0"
             assert win.block_size.currentText() == "512"
+            assert win.exclusive.isChecked() is False
         finally:
             win.deleteLater()

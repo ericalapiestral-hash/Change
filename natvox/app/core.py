@@ -63,6 +63,9 @@ class Settings:
     block_size: int = 256
     sample_rate: int = 48000
     output_channels: int = 1
+    #: WASAPI exclusive mode.  Windows only, and only on the WASAPI copy of a
+    #: device -- see :func:`natvox.app.backend.exclusive_settings`.
+    exclusive: bool = False
     remote_url: str = ""
     use_remote: bool = False
 
@@ -325,7 +328,8 @@ class Studio:
         processor = self._build()
         chosen = backend or LiveBackend(self.settings.input_device,
                                         self.settings.output_device,
-                                        self.settings.block_size)
+                                        self.settings.block_size,
+                                        self.settings.exclusive)
         try:
             chosen.start(processor)
         except AudioUnavailable as exc:
@@ -389,6 +393,24 @@ class Studio:
         target = Path(path)
         target.write_bytes(write_wav(audio, self.settings.sample_rate))
         return target
+
+    def measure_round_trip(self, attempts: int = 5):
+        """Time a sweep out of the output device and back in through the input.
+
+        Only meaningful once the two are looped together -- physically, or
+        through a virtual cable with its playback end selected as the output
+        and its recording end as the input.  That is the path a voice takes on
+        its way into another program, so this is the delay that program hears,
+        including every buffer nothing reports.
+        """
+        from . import loopback
+
+        settings = self.settings
+        return loopback.through_devices(
+            settings.input_device, settings.output_device,
+            sample_rate=settings.sample_rate, block_size=settings.block_size,
+            attempts=attempts, exclusive=settings.exclusive,
+        )
 
     def self_test(self, block_size: int | None = None, seconds: float = 3.0) -> MachineReport:
         """Can this computer keep up?  Measured on this computer.
