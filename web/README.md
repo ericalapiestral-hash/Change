@@ -16,10 +16,18 @@ microphone.
 
 Two things this buys that a desktop build does not:
 
-- **It can be tested end to end, automatically.** Chromium renders the real
-  AudioWorklet through an `OfflineAudioContext`, so a test can push a known
-  signal through the shipped processor and assert on the samples that come
-  back. Nothing is stubbed.
+- **It can be tested end to end, automatically** - including the live path.
+  Chromium renders the real AudioWorklet through an `OfflineAudioContext`, and
+  it will also accept a WAV file *as the microphone*, so a test can start the
+  real page with `getUserMedia`, drive the real controls, and assert on what
+  the meters say. Nothing is stubbed.
+
+  That distinction earned itself immediately: the space-bar A/B was broken in
+  every state except a freshly loaded page - clicking Start left that button
+  focused, and a focused button swallows the space bar and activates itself, so
+  pressing space to hear the original stopped the voice changer instead. No
+  offline render could have caught it, because an offline render has no focus
+  and no keyboard.
 - **It can be checked against the Python engine sample for sample.** Both
   implementations share a portable random generator and identical transform
   sizes, so the same input produces the same output to better than -100 dB.
@@ -52,8 +60,10 @@ judging "does this sound processed" needs more than a volume meter:
   otherwise leave at your own pitch. This slider buys that back and costs
   exactly that much latency.
 - **Latency and CPU.** Shown live, because they are what you trade against
-  everything else. CPU is estimated over 256 blocks with a 1 ms clock - the
-  audio thread has no high-resolution timer - so treat it as a rough figure.
+  everything else. The audio thread has no high-resolution timer, so the load
+  figure is a mean over 256 blocks with a 1 ms clock; next to it is a count of
+  blocks that took 2 ms or more on their own, because a single one of those is
+  what clicks, and no average can show it.
 
 ## Layout
 
@@ -74,8 +84,9 @@ web/
   test/
     dsp.test.mjs          unit tests, in Node
     parity.test.mjs       sample-level agreement with the Python engine
-    browser.test.mjs      the real page, driven by Playwright
-    fixtures/             reference vectors produced by the Python engine
+    browser.test.mjs      offline renders through the real worklet
+    live.test.mjs         the live path, with a WAV file as the microphone
+    fixtures/             reference vectors, and the fake microphone's audio
 ```
 
 Nothing in the steady-state audio path allocates. Buffers are sized in the
@@ -87,9 +98,15 @@ click.
 ## Tests
 
 ```bash
-npm test              # 75 tests: unit, parity, browser
+npm test              # 84 tests: unit, parity, offline render, live path
 npm run test:parity   # just the comparison against Python
+npm run test:live     # just the live microphone path
 ```
+
+The live tests start the page with Chromium's fake capture device pointed at
+`test/fixtures/mic_vowel_120hz.wav`, then click Start, hold the space bar,
+move a slider, press Capture and play the loop - asserting on a structured
+snapshot rather than on the DOM, since the DOM is localised.
 
 `test/fixtures/` is regenerated from the Python engine; if the DSP changes on
 either side, regenerate it and the parity test will say whether the two still

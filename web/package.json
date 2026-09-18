@@ -6,10 +6,11 @@
   "description": "Browser front end and AudioWorklet build of the natvox voice changer",
   "scripts": {
     "start": "node test/serve.mjs",
-    "test": "node --test test/dsp.test.mjs test/parity.test.mjs test/browser.test.mjs",
+    "test": "node --test test/dsp.test.mjs test/parity.test.mjs test/browser.test.mjs test/live.test.mjs",
     "test:dsp": "node --test test/dsp.test.mjs",
     "test:parity": "node --test test/parity.test.mjs",
-    "test:browser": "node --test test/browser.test.mjs"
+    "test:browser": "node --test test/browser.test.mjs",
+    "test:live": "node --test test/live.test.mjs"
   },
   "devDependencies": {
     "playwright": "^1.63.0"

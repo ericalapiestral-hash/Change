@@ -48,6 +48,7 @@ const state = {
   histTotal: 0,
   captured: null,
   captureRate: 48000,
+  metrics: {},
 };
 
 /* ------------------------------------------------------------------ i18n */
@@ -138,14 +139,19 @@ function pushShift() {
   refreshWarnings();
   if (!state.node) return;
   const ratio = semitonesToRatio(profile.formantSemitones);
+  let spec = null;
   if (Math.abs(ratio - lastFormantRatio) > 1e-6) {
     lastFormantRatio = ratio;
-    const spec = buildKernel(ratio, { maxRatio: semitonesToRatio(4) });
-    state.node.port.postMessage({ type: 'kernel', spec }, [spec.table.buffer]);
+    spec = buildKernel(ratio, { maxRatio: semitonesToRatio(4) });
   }
-  state.node.port.postMessage({
-    type: 'shift', pitch: profile.pitchSemitones, formant: profile.formantSemitones,
-  });
+  // Kernel and ratio travel together. Sent as two messages, the engine spends
+  // at least one quantum with a kernel built for one formant ratio and a
+  // profile claiming another, which measured 6.6 dB of extra high-frequency
+  // artifact - the inconsistent state is simply made unrepresentable.
+  state.node.port.postMessage(
+    { type: 'shift', pitch: profile.pitchSemitones, formant: profile.formantSemitones, spec },
+    spec ? [spec.table.buffer] : [],
+  );
   state.node.port.postMessage({
     type: 'options',
     shiftUnvoiced: profile.shiftUnvoiced,
@@ -364,6 +370,7 @@ function onWorkletMessage(msg) {
     return;
   }
   if (msg.type !== 'metrics') return;
+  state.metrics = msg;
 
   paintMeter(ui.meterIn, ui.meterInText, msg.peakIn);
   paintMeter(ui.meterOut, ui.meterOutText, msg.peakOut);
@@ -518,7 +525,28 @@ function benchmark(profile = PRESETS.male_to_female, seconds = 2, sampleRate = 4
   return { seconds, elapsed, realtimeFactor: seconds / elapsed, load: elapsed / seconds };
 }
 
-window.natvoxTest = { renderOffline, benchmark, VoiceChanger, PRESETS, state };
+/**
+ * Structured view of what the interface currently believes.
+ *
+ * Live-path tests assert on this rather than on the DOM, because the DOM is
+ * localised - `voicing` reads 유성음 or "voiced" depending on the language
+ * toggle, and a test must not depend on which.
+ */
+function snapshot() {
+  return {
+    running: state.running,
+    bypass: ui.bypass.classList.contains('active'),
+    profile: readProfile(),
+    latencySamples: state.latencySamples,
+    metrics: { ...state.metrics },
+    histogramFrames: state.histTotal,
+    capturedSamples: state.captured ? state.captured.length : 0,
+    looping: state.loopSource !== null,
+    language: state.lang,
+  };
+}
+
+window.natvoxTest = { renderOffline, benchmark, snapshot, VoiceChanger, PRESETS, state };
 
 /* ------------------------------------------------------------------ wiring */
 
@@ -574,12 +602,32 @@ for (const [down, up] of [['pointerdown', 'pointerup'], ['pointerleave', null]])
     ui.bypass.addEventListener(up, () => setBypass(false));
   }
 }
+// Captured before anything else sees it. A focused button - and after
+// clicking Start, that is the Start button - otherwise swallows the space bar
+// and activates itself, so pressing space to hear the original instead stopped
+// the voice changer. The A/B is the control the whole naturalness judgement
+// rests on; it cannot depend on where focus happens to be.
+function spaceIsForTyping(target) {
+  if (!target) return false;
+  const tag = target.tagName;
+  return target.isContentEditable
+    || tag === 'TEXTAREA'
+    || (tag === 'INPUT' && !['range', 'checkbox', 'radio', 'button'].includes(target.type));
+}
+
 window.addEventListener('keydown', (e) => {
-  if (e.code === 'Space' && !e.repeat && e.target === document.body) { e.preventDefault(); setBypass(true); }
-});
+  if (e.code !== 'Space' || spaceIsForTyping(e.target)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (!e.repeat) setBypass(true);
+}, { capture: true });
+
 window.addEventListener('keyup', (e) => {
-  if (e.code === 'Space') { e.preventDefault(); setBypass(false); }
-});
+  if (e.code !== 'Space' || spaceIsForTyping(e.target)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  setBypass(false);
+}, { capture: true });
 
 ui.capture.addEventListener('click', () => {
   if (!state.node) return;

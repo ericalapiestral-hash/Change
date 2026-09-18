@@ -124,8 +124,11 @@ Other properties the test suite pins down:
   choose its block size.
 - Pitch tracking is correct on **355 of 355** combinations of vowel, pitch and
   configured range.
-- The browser engine matches the Python one to better than **−100 dB** on
-  speech, creak and noise across six presets.
+- The browser engine matches the Python one to better than **−90 dB** on
+  speech, creak and noise across six presets, most cases below −100 dB.
+- The browser's live path is tested with a WAV file standing in as the
+  microphone, so starting the stream, the space-bar A/B, live slider moves, the
+  capture buffer and the loop are all asserted on rather than assumed.
 - Grain-rate modulation on fricatives stays within 3 dB of the input's own.
 - A NaN or Inf from the device is survived rather than fatal. Four of them used
   to raise out of the audio callback, and because the exception escaped before
@@ -239,7 +242,7 @@ pip install -e '.[dev]'
 pytest                      # 170 tests
 python tools/bench.py       # artifact measurements
 
-cd web && npm install && npm test     # 75 more, including the browser
+cd web && npm install && npm test     # 84 more, including the live path
 ```
 
 `tools/synth_speech.py` generates the reference utterance: a source-filter

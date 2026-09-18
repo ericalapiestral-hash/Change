@@ -8,8 +8,11 @@
  * it has been.
  *
  * Messages in:
- *   {type:'shift',   pitch, formant}    live pitch/formant, no latency change
- *   {type:'kernel',  spec}              resampling kernel built on the main thread
+ *   {type:'shift',   pitch, formant, spec?}
+ *                                      live pitch/formant, no latency change;
+ *                                      `spec` carries a resampling kernel built
+ *                                      on the main thread when the formant
+ *                                      ratio changed
  *   {type:'options', ...}               consonant shifting, breath, output gain
  *   {type:'bypass',  on}                A/B against the delay-matched dry signal
  *   {type:'capture'}                    hand back the last few seconds of input
@@ -85,12 +88,12 @@ class NatvoxProcessor extends AudioWorkletProcessor {
     const engine = this.engine;
     switch (msg.type) {
       case 'shift':
+        // The kernel arrives with the ratio it was built for. Installing it
+        // separately would leave the engine, for at least one quantum, holding
+        // a kernel for one formant ratio and a profile claiming another.
+        if (msg.spec) engine.resampler.installTable(msg.spec);
         engine.setShift(msg.pitch, msg.formant);
-        break;
-      case 'kernel':
-        // Built on the main thread; installing is a memcpy.
-        engine.resampler.installTable(msg.spec);
-        engine.formantRatio = msg.spec.ratio;
+        if (msg.spec) engine.formantRatio = msg.spec.ratio;
         break;
       case 'options':
         engine.setOptions(msg);
