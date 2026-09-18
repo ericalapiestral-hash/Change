@@ -108,6 +108,57 @@ jobs:
           Stop-Process -Id $process.Id -Force
           Write-Host "stayed open"
 
+      # The one path that had never been run.  A review found that the
+      # download could never have worked -- it used a URL that answers an API
+      # token with 404 on a private repository -- and the CI gate could not
+      # have caught it, because it stopped at the check.
+      #
+      # It works here because the build that has just been made is a different
+      # commit from the one currently published, so this copy of it really does
+      # have an update to install: the previous release.  After the swap the
+      # copy IS the published build, which is what the second check asserts.
+      - name: The update actually installs, on a throwaway copy
+        working-directory: packaging
+        env:
+          NATVOX_GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Continue"
+          Copy-Item -Recurse dist\natvox dist\selftest
+          $before = (.\dist\selftest\natvox-cli.exe --update 2>&1 | Out-String)
+          Write-Host $before
+          if ($before -match "no release tagged|could not reach") {
+            Write-Host "nothing published yet to update from; skipping"
+            Remove-Item -Recurse -Force dist\selftest
+            $global:LASTEXITCODE = 0
+            exit 0
+          }
+          if ($before -notmatch "an update is available") {
+            $ErrorActionPreference = "Stop"
+            throw "the fresh build should differ from the published one: $before"
+          }
+          Write-Host (.\dist\selftest\natvox-cli.exe --update --install 2>&1 | Out-String)
+          $deadline = (Get-Date).AddSeconds(180)
+          do {
+            Start-Sleep -Seconds 5
+            $staged = Test-Path "dist\.natvox-staged"
+          } while ($staged -and (Get-Date) -lt $deadline)
+          if ($staged) {
+            $ErrorActionPreference = "Stop"
+            throw "the swap never happened: dist\.natvox-staged is still there"
+          }
+          if (-not (Test-Path "dist\selftest\natvox-cli.exe")) {
+            $ErrorActionPreference = "Stop"
+            throw "THE SWAP LEFT NO PROGRAM BEHIND"
+          }
+          $after = (.\dist\selftest\natvox-cli.exe --update 2>&1 | Out-String)
+          Write-Host $after
+          if ($after -notmatch "which is the published build") {
+            $ErrorActionPreference = "Stop"
+            throw "after installing, the copy should BE the published build: $after"
+          }
+          Remove-Item -Recurse -Force dist\selftest -ErrorAction SilentlyContinue
+          $global:LASTEXITCODE = 0
+
       - name: Package
         working-directory: packaging
         run: |

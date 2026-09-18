@@ -281,6 +281,26 @@ class TestStaging:
         assert not (install.parent / update.STAGING).exists(), \
             "and it cleans up after refusing"
 
+    @pytest.mark.parametrize("launcher", ["natvox.exe", "natvox"])
+    def test_either_launcher_makes_it_a_build(self, tmp_path, launcher):
+        """The question here is "is this a build of this program", and both
+        names answer it.  Asking for the *running* platform's launcher
+        conflates that with "could this run here" -- which is the swap
+        script's question, checked there, at the moment it matters.
+
+        It also meant a Windows archive could not be verified anywhere but
+        Windows, which is exactly how the end-to-end path went untested: the
+        download was broken for months and the only machine that could have
+        noticed was not the one checking.
+        """
+        install = tmp_path / "natvox"
+        install.mkdir()
+        archive = self._zip(tmp_path / "b.zip", names=("_internal/lib",),
+                            launchers=False)
+        with zipfile.ZipFile(archive, "a") as bundle:
+            bundle.writestr(launcher, b"x" * 16)
+        assert update.stage(archive, install).exists()
+
     def test_an_archive_with_no_program_in_it_is_refused(self, tmp_path):
         install = tmp_path / "natvox"
         install.mkdir()
@@ -288,6 +308,7 @@ class TestStaging:
                         launchers=False)
         with pytest.raises(update.UpdateError, match="has no natvox"):
             update.stage(bad, install)
+        assert "natvox.exe" in str(update.LAUNCHERS)
 
     def test_something_that_is_not_a_zip_is_refused(self, tmp_path):
         install = tmp_path / "natvox"

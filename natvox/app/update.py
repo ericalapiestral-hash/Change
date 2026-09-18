@@ -68,6 +68,9 @@ TOKEN_ENV = "NATVOX_GITHUB_TOKEN"
 #: Name of the directory the new copy is unpacked into, beside the old one.
 STAGING = ".natvox-staged"
 
+#: What a bundle is called, on any platform.
+LAUNCHERS = ("natvox.exe", "natvox")
+
 CONNECT_TIMEOUT = 20.0
 
 #: Whole-download budget.  A per-read timeout bounds nothing on its own: a
@@ -478,10 +481,16 @@ def stage(archive: Path, beside: Path) -> Path:
         if not done:
             shutil.rmtree(staged, ignore_errors=True)
 
-    launcher = "natvox.exe" if os.name == "nt" else "natvox"
-    if not (staged / launcher).exists():
+    # Either name.  The question here is "is this a build of this program",
+    # and both answer it; asking for the *running* platform's launcher
+    # conflates that with "could this run here", which is the swap script's
+    # question and is checked there, at the moment it matters.  Insisting on
+    # it here means an archive cannot be verified anywhere but the platform it
+    # was built for -- which is exactly how the end-to-end path went untested.
+    if not any((staged / name).exists() for name in LAUNCHERS):
         shutil.rmtree(staged, ignore_errors=True)
-        raise UpdateError(f"the archive has no {launcher} in it")
+        raise UpdateError("the archive has no natvox in it: "
+                          f"expected one of {', '.join(LAUNCHERS)}")
     return staged
 
 
