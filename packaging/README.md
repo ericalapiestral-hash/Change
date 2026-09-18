@@ -12,6 +12,13 @@ cross-compile, so a Windows build happens on Windows.
   windowed one has to stay open for twenty seconds. PyInstaller reports
   success for bundles that are missing a module they only import at startup,
   and the first anyone knows is a window that never opens.
+* It then installs a **real update onto a throwaway copy** of what it just
+  built. That works because the fresh build is a different commit from the one
+  currently published, so the copy genuinely has an update to fetch — the
+  previous release — and afterwards the copy must *be* that release, and must
+  still be a program that starts. This exists because the download was broken
+  for its whole life and the gate that should have caught it stopped at the
+  check: the half that was broken was the half nothing ran.
 * The zip is attached to a release: the rolling `desktop-build` prerelease for
   a manual run, or the tag's own release for a `v*` tag.
 
