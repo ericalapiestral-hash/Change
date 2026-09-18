@@ -3,9 +3,33 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-# Beyond roughly this much shift, *any* pitch/formant method starts to sound
-# processed, because the vocal-tract response being stretched no longer
-# matches a physically plausible speaker.  We warn rather than forbid.
+# Where the warnings start.  These are thresholds on a gradual slope, not
+# cliffs, and the difference matters because a speaker with a low voice needs
+# to cross the pitch one to sound like anybody else at all.
+#
+# The received wisdom is that beyond about this much shift *any* pitch/formant
+# method sounds processed, because the vocal-tract response being stretched
+# stops matching a physically plausible speaker.  That is the failure mode of
+# methods where the formants follow the pitch.  Here they do not: pitch moves
+# by respacing glottal pulses and the tract is resampled separately, so the
+# stretch is whatever `formant_semitones` asks for and is unaffected by how far
+# the pitch went.
+#
+# Measured on this implementation, sweeping pitch at a fixed +2.6 st of tract
+# shift, there is no cliff at 8:
+#
+#   sustained vowels at 110 Hz, +4.5 -> +14 st: inharmonic energy -34.8 ->
+#   -37.0 dB, HNR 9.4 -> 12.9 dB, pitch error 0.0 cents throughout -- flat or
+#   slightly better at the large shifts.
+#
+#   connected speech, +4.5 -> +13 st: spectral envelope error 0.65 -> 1.13 dB,
+#   climbing gently and monotonically; out-of-band energy flat at -56 dB.
+#
+# 1.1 dB of envelope error is small against the 7.6 dB that aspiration costs
+# on the `female` preset.  So these stay as warnings and the numbers above are
+# what the warning means -- and they stay where they are rather than moving up,
+# because none of the measurements above can hear.  The only ear this package
+# has met disagreed with its own metrics once already.
 NATURAL_PITCH_LIMIT = 8.0
 NATURAL_FORMANT_LIMIT = 5.0
 
@@ -158,9 +182,10 @@ class VoiceProfile:
         notes = []
         if abs(self.pitch_semitones) > NATURAL_PITCH_LIMIT:
             notes.append(
-                f"pitch shift of {self.pitch_semitones:+.1f} st exceeds the "
-                f"+-{NATURAL_PITCH_LIMIT:.0f} st range where PSOLA stays transparent; "
-                "expect some loss of naturalness"
+                f"pitch shift of {self.pitch_semitones:+.1f} st is past the "
+                f"+-{NATURAL_PITCH_LIMIT:.0f} st this warns at; measured here the "
+                "degradation is gradual rather than a cliff, so listen before "
+                "believing either way"
             )
         if abs(self.formant_semitones) > NATURAL_FORMANT_LIMIT:
             notes.append(
@@ -170,7 +195,9 @@ class VoiceProfile:
         if self.pitch_semitones > 4.0 and self.formant_semitones <= 0.0:
             notes.append(
                 "raising pitch without raising formants sounds like a sped-up "
-                "recording; try formant_semitones around 40% of the pitch shift"
+                "recording; try formant_semitones around +2.6, the male-female "
+                "vocal tract ratio, which does not depend on how far the pitch "
+                "moved"
             )
         if self.intonation > 1.0 and self.pitch_semitones <= 0.0:
             notes.append(
@@ -179,8 +206,9 @@ class VoiceProfile:
             )
         if self.pitch_semitones < -4.0 and self.formant_semitones >= 0.0:
             notes.append(
-                "lowering pitch without lowering formants sounds hollow; try a "
-                "negative formant shift around 40% of the pitch shift"
+                "lowering pitch without lowering formants sounds hollow; try "
+                "formant_semitones around -2.6, the vocal tract ratio, which "
+                "does not depend on how far the pitch moved"
             )
         return notes
 

@@ -67,7 +67,11 @@ class TestProcess:
     def test_warns_when_settings_will_cost_naturalness(self, wav, tmp_path, capsys):
         out = tmp_path / "out.wav"
         assert main(["process", str(wav), str(out), "--pitch", "11"]) == 0
-        assert "naturalness" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "note:" in err
+        # It warns, and it does not overstate: measured on this implementation
+        # the degradation past the threshold is gradual rather than a cliff.
+        assert "gradual" in err or "listen" in err
 
     def test_unknown_preset_is_rejected(self, wav, tmp_path):
         with pytest.raises(SystemExit):

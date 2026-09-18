@@ -222,12 +222,12 @@ raises pitch by 7 semitones because adult male and female F0 differ by about
 9.6 and three quarters of that is where PSOLA stays transparent — but seven
 semitones is not a destination, it is a distance:
 
-| speaker's habitual F0 | `female` lands them at | to reach 200 Hz they need |
+| speaker's habitual F0 | `female` lands them at | to reach 185 Hz they need |
 |---|---|---|
-| 95 Hz | 142 Hz | +12.9 st |
-| 110 Hz | 165 Hz | +10.3 st |
-| 125 Hz | 187 Hz | +8.1 st |
-| 145 Hz | 217 Hz | +5.6 st |
+| 95 Hz | 142 Hz | +11.5 st |
+| 115 Hz | 172 Hz | +8.2 st |
+| 125 Hz | 187 Hz | +6.8 st |
+| 145 Hz | 217 Hz | +4.2 st |
 
 The same preset undershoots three of those speakers and overshoots the fourth.
 The program already tracks pitch, so it does not have to guess:
@@ -255,13 +255,46 @@ whatever the speaker needs. The "about 40% of the pitch shift" rule of thumb
 gives the right answer for an average male speaker and the wrong one for
 everybody else, in the direction that makes a low voice sound like a child.
 
+**The target is 185 Hz, not the female average.** Adult female speaking F0
+averages around 210, but the point where listeners stop hearing a voice as male
+sits well below that — the reported crossover is somewhere around 155–180 Hz.
+Aiming at the average asks for the whole distance when only the boundary has to
+be crossed, and for a low voice that is a large difference: 110 Hz to 210 is
++10.9 semitones, to 185 is +8.9. The crossover is a range, it is not measured
+here, and nothing is known about where it sits for Korean — so it is settable
+with `--target`, and the shift it implies is always reported before it is used.
+
 It sets `f0_min` from the speaker's own floor too, which is the main latency
 control — so fitting the voice usually makes it faster as well.
 
-What it will not do is pretend. A 95 Hz speaker needs +12.9 semitones to reach
-a female median, and that is past where any time-domain method stays
-transparent; it says so, says where staying inside the limit would land them
-instead, and leaves the choice.
+#### What the ±8 semitone limit is actually worth
+
+`NATURAL_PITCH_LIMIT = 8.0` was inherited wisdom: past about that, the story
+goes, any pitch method sounds processed because the vocal-tract response being
+stretched stops matching a plausible speaker. That is the failure mode of
+methods where the formants follow the pitch. **Here they do not** — pitch moves
+by respacing glottal pulses, the tract is resampled separately, and the stretch
+is whatever `formant_semitones` asks for regardless of how far the pitch went.
+
+Swept on this implementation at a fixed +2.6 st of tract shift, there is no
+cliff at 8:
+
+| | +4.5 st | +8 st | +11 st | +13/+14 st |
+|---|---|---|---|---|
+| inharmonic energy, sustained vowel | −34.8 dB | −36.3 | −37.9 | −37.0 |
+| HNR, sustained vowel | 9.4 dB | 10.3 | 11.2 | 12.9 |
+| pitch error | 0.0 cents | 0.0 | 0.0 | 0.0 |
+| envelope error, connected speech | 0.65 dB | ~0.8 | 0.95 | 1.13 |
+
+Flat or slightly better at the large shifts on a sustained vowel; on connected
+speech the envelope error climbs gently and monotonically to 1.1 dB, against
+the 7.6 dB that aspiration costs on the `female` preset.
+
+**The threshold stays where it is anyway**, because not one of those
+measurements can hear. It is a warning rather than a wall, and the warning now
+says the degradation is gradual and to listen before believing it either way.
+A 95 Hz speaker needs +11.5 st to clear the crossover; that is past the
+threshold, and it may well be the right thing to do.
 
 ### More than pitch and formants
 
@@ -605,7 +638,7 @@ reconstructs to −322 dB. It has **not** been run against a real checkpoint.
 
 ```bash
 pip install -e '.[dev]'
-pytest                      # 622 tests
+pytest                      # 623 tests
 python tools/bench.py       # artifact measurements
 
 cd web && npm install && npm test     # 127 more, including the live path

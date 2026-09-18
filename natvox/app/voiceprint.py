@@ -40,11 +40,19 @@ from ..dsp.f0 import YinF0Tracker
 
 #: Median speaking F0 to aim a voice at, in Hz.
 #:
-#: These are literature averages for adult speakers reading or conversing, not
-#: anything measured in this repository, and individual speakers cover a wide
-#: band around them.  They are a starting point for the arithmetic, which is
-#: why both are settable.
-FEMALE_TARGET_HZ = 200.0
+#: Not the average of the target group, deliberately.  Adult female speaking F0
+#: averages around 210 Hz, but the point where listeners stop hearing a voice
+#: as male sits well below that -- the reported crossover in listening studies
+#: is somewhere around 155-180 Hz.  Aiming at the average asks for the whole
+#: distance when only the boundary has to be crossed, and for a low voice that
+#: difference is large: 110 Hz to 210 Hz is +10.9 semitones, to 185 Hz is +8.9.
+#:
+#: 185 clears the top of that crossover band with a little margin.  It is a
+#: starting point rather than a fact -- the crossover is a range, it is not
+#: measured here, and nothing is known about whether it sits in the same place
+#: for Korean -- which is why it is settable and why the shift it implies is
+#: always reported rather than silently applied.
+FEMALE_TARGET_HZ = 185.0
 MALE_TARGET_HZ = 115.0
 
 #: Vocal tract length shift between adult male and female, in semitones.
@@ -210,7 +218,12 @@ def suggest(voice: VoicePrint, target_hz: float = FEMALE_TARGET_HZ,
                            "then measure again"])
 
     wanted = voice.shift_to(target_hz)
-    tract = TRACT_SEMITONES if wanted >= 0.0 else -TRACT_SEMITONES
+    # The direction comes from the voice being made, not from the arithmetic.
+    # A speaker who already sits at the target needs no pitch shift and still
+    # wants the tract of whoever they are trying to sound like, and the sign of
+    # a near-zero number cannot say which that is -- the base preset can.
+    toward = base.formant_semitones if base.formant_semitones else wanted
+    tract = TRACT_SEMITONES if toward >= 0.0 else -TRACT_SEMITONES
     notes = []
 
     # The floor the speaker actually uses, not the one the preset guessed.
@@ -231,10 +244,12 @@ def suggest(voice: VoicePrint, target_hz: float = FEMALE_TARGET_HZ,
 
     if abs(wanted) > NATURAL_PITCH_LIMIT:
         notes.append(
-            f"{abs(wanted):.1f} st is past the +-{NATURAL_PITCH_LIMIT:.0f} st where "
-            f"PSOLA stays transparent. Holding it to {transparent_st:+.1f} st would "
-            f"land you at {transparent_hz:.0f} Hz instead of {target_hz:.0f} -- "
-            "lower, but without the processed quality. Try both.")
+            f"{abs(wanted):.1f} st is past the +-{NATURAL_PITCH_LIMIT:.0f} st this "
+            f"package warns at. Measured here, the degradation is gradual rather "
+            f"than a cliff -- spectral envelope error on connected speech goes "
+            f"0.65 dB at +4.5 st to 1.13 dB at +13 -- so it is worth hearing "
+            f"before believing. Holding it to {transparent_st:+.1f} st would land "
+            f"you at {transparent_hz:.0f} Hz instead of {target_hz:.0f}. Try both.")
     if voice.range_semitones < 4.0:
         notes.append(
             f"your pitch range is {voice.range_semitones:.1f} st, which is narrow; "

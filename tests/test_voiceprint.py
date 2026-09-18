@@ -121,9 +121,19 @@ class TestSuggesting:
 
     def test_going_down_flips_the_tract_shift_too(self, speech):
         s = voiceprint.suggest(voiceprint.measure(speech(210.0), SR),
-                               target_hz=voiceprint.MALE_TARGET_HZ)
+                               target_hz=voiceprint.MALE_TARGET_HZ,
+                               base=presets.get("female_to_male"))
         assert s.profile.pitch_semitones < 0
         assert s.profile.formant_semitones == -voiceprint.TRACT_SEMITONES
+
+    def test_a_speaker_already_at_the_target_still_gets_the_tract(self, speech):
+        """They need no pitch shift and still want the tract of whoever they
+        are trying to sound like.  The sign of a near-zero number cannot say
+        which that is, so it comes from the preset."""
+        s = voiceprint.suggest(
+            voiceprint.measure(speech(voiceprint.FEMALE_TARGET_HZ), SR))
+        assert abs(s.profile.pitch_semitones) < 0.5
+        assert s.profile.formant_semitones == voiceprint.TRACT_SEMITONES
 
     def test_the_floor_comes_from_the_speaker_not_the_preset(self, speech):
         """f0_min sets the latency floor, so somebody who never goes below
