@@ -332,7 +332,7 @@ engine + device buffers + host API + mixer + whatever carries it across
 ```
 
 Everything after the first term is chosen rather than computed, and on Windows
-the defaults are the worst available. Two levers, in the order they are worth
+the defaults are the worst available. Three levers, in the order they are worth
 pulling:
 
 **1. Pick the right copy of the device.** PortAudio offers the same microphone
@@ -395,10 +395,11 @@ Measure first — and on most setups the answer will be no. A virtual cable is a
 memcpy between two buffers; it has no reason to cost anything. What costs is
 the buffering around it, and existing cables expose that as a setting. If
 `--loopback` says the unexplained part is a millisecond or two, there is
-nothing there to win — and if it says twenty, check lever 3 before blaming the
-cable, because a resampler nobody asked for looks exactly like a slow cable.
+nothing there to win. And before blaming the cable for a large one, check lever
+3: a resampler nobody asked for looks exactly like a slow cable.
 
-If it says twenty, it is worth knowing what the alternative actually involves:
+If the number survives all three levers, here is what the alternative actually
+involves:
 
 | | |
 |---|---|
