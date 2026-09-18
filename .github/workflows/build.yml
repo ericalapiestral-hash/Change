@@ -11,6 +11,14 @@ jobs:
   windows:
     name: Windows executable
     runs-on: windows-latest
+    # To attach the build to a release.  Actions artifacts were the obvious
+    # place for it and turned out not to be: they are charged against an
+    # account-wide storage quota that a build of this size exhausts, and the
+    # failure arrives after the ten minutes of work rather than before it.
+    # A release asset is not charged against it, does not expire in thirty
+    # days, and has a URL that stays the same.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -60,17 +68,63 @@ jobs:
         working-directory: packaging
         run: |
           $version = (python -c "import natvox; print(natvox.__version__)")
-          Compress-Archive -Path dist\natvox\* -DestinationPath "natvox-$version-windows-x64.zip"
-          Get-ChildItem *.zip | ForEach-Object {
-            Write-Host "$($_.Name)  $([math]::Round($_.Length / 1MB, 1)) MB"
-          }
+          $zip = "natvox-$version-windows-x64.zip"
+          Compress-Archive -Path dist\natvox\* -DestinationPath $zip
+          $size = [math]::Round((Get-Item $zip).Length / 1MB, 1)
+          Write-Host "$zip  $size MB"
+          "ZIP=$zip"       | Out-File -Append $env:GITHUB_ENV
+          "VERSION=$version" | Out-File -Append $env:GITHUB_ENV
+          "SIZE=$size"     | Out-File -Append $env:GITHUB_ENV
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: natvox-windows-x64
-          path: packaging/*.zip
-          retention-days: 30
-          compression-level: 0   # already a zip
+      - name: Release notes
+        working-directory: packaging
+        run: |
+          $lines = @(
+            "Built on ``windows-latest`` from ``$env:GITHUB_SHA``, $env:SIZE MB.",
+            "",
+            "Unzip it and run **natvox.exe**. ``natvox-cli.exe --check`` says whether",
+            "this machine can keep up; ``natvox-cli.exe --probe ws://...`` measures what",
+            "converting on another machine would cost.",
+            "",
+            "Before this was published the workflow ran the full test suite on Windows,",
+            "then ran what it had built: the console executable had to print a real",
+            "measurement and the windowed one had to stay open for twenty seconds.",
+            "PyInstaller reports success for bundles that are missing a module they only",
+            "import at startup, and the first anyone knows is a window that never opens.",
+            "",
+            "Not tested against real audio hardware -- a runner has no sound card. Wear",
+            "headphones the first time: the output device is carrying your own voice, and",
+            "speakers feeding it back into the microphone will make the engine convert",
+            "its own output."
+          )
+          Set-Content -Path notes.md -Value $lines -Encoding utf8
+
+      - name: Publish
+        working-directory: packaging
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = if ($env:GITHUB_REF -like "refs/tags/*") {
+            $env:GITHUB_REF -replace "^refs/tags/", ""
+          } else { "desktop-build" }
+
+          if ($tag -eq "desktop-build") {
+            # One tag, recreated each run, so the download URL never changes.
+            $ErrorActionPreference = "Continue"
+            gh release view $tag *> $null
+            $existed = ($LASTEXITCODE -eq 0)
+            if ($existed) { gh release delete $tag --yes --cleanup-tag }
+            $ErrorActionPreference = "Stop"
+            $global:LASTEXITCODE = 0
+            gh release create $tag $env:ZIP --target $env:GITHUB_SHA --prerelease --notes-file notes.md --title "natvox $env:VERSION - Windows desktop build"
+          } else {
+            gh release upload $tag $env:ZIP --clobber
+          }
+          if ($LASTEXITCODE -ne 0) { throw "publishing failed" }
+
+          $url = (gh release view $tag --json url --jq .url)
+          "### Windows build"                     | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          "[$env:ZIP]($url) - $env:SIZE MB"       | Out-File -Append $env:GITHUB_STEP_SUMMARY
 
   linux:
     name: Tests
