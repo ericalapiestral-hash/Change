@@ -570,6 +570,22 @@ class VoiceChanger:
                 # shifting down skips grains, which decorrelates successive
                 # deviations and would otherwise amplify it past the
                 # speaker's own.
+                #
+                # The obvious objection is that this throws away the speaker's
+                # jitter exactly where the shift is largest and the result is
+                # most at risk of sounding mechanical.  Measured on the
+                # reference utterance, against the same engine with the
+                # division removed:
+                #
+                #   shift   +0.0  +4.5  +7.0  +9.0  +11.0  +13.0
+                #   shipped  0.96  0.86  0.96  1.04   0.95   0.86   (x source)
+                #   no div   0.96  0.89  0.97  1.17   0.98   1.04
+                #
+                # No downward trend with shift in either, and the swing between
+                # adjacent shifts is larger than the gap between the columns.
+                # So the objection is not visible here and the division stays.
+                # If it is ever revisited, beat this table rather than the
+                # argument.
                 target += MICRO_TIMING * mark.deviation / max(ratio, 1.0)
 
             # Split the target position into a whole-sample slot and the
