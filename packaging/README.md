@@ -12,7 +12,16 @@ cross-compile, so a Windows build happens on Windows.
   windowed one has to stay open for twenty seconds. PyInstaller reports
   success for bundles that are missing a module they only import at startup,
   and the first anyone knows is a window that never opens.
-* The zip lands under the run's Artifacts.
+* The zip is attached to a release: the rolling `desktop-build` prerelease for
+  a manual run, or the tag's own release for a `v*` tag.
+
+Not an Actions artifact, which is where it started. Artifacts are charged
+against an account-wide storage quota that a bundle this size exhausts, and the
+failure lands *after* the ten minutes of work. A release asset costs nothing
+against that quota, does not expire in thirty days, and keeps the same URL.
+
+Measured on the runner: the whole suite passes on Windows in 68 seconds,
+PyInstaller takes 54 seconds, and the zip is **93 MB**.
 
 ## By hand
 
@@ -35,7 +44,8 @@ pops a black window on a double-click and looks like a mistake. They tell
 themselves apart by their own filename. On Linux and macOS the distinction
 does not exist and either one behaves the same.
 
-The bundle is **288 MB**, measured on Linux. Almost all of it is three
+The unpacked bundle is **288 MB** (93 MB zipped), measured on Linux and
+Windows respectively. Almost all of it is three
 libraries: PySide6 (99 MB, after excluding the Qt modules the window never
 touches), SciPy (73 MB) and NumPy (42 MB). The engine's own code is under a
 megabyte. SciPy is the one lever left — the engine uses four functions from
