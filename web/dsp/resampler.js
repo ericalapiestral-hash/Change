@@ -144,14 +144,25 @@ function sinc(x) {
   return Math.sin(pix) / pix;
 }
 
-/** Modified Bessel function of the first kind, order zero (series form). */
+/**
+ * Modified Bessel function of the first kind, order zero.
+ *
+ * A plain series with a fixed iteration count rather than the Chebyshev
+ * approximation a numerics library would use, and rather than stopping early
+ * once the terms stop mattering. Both choices are for one reason: the Python
+ * engine evaluates the identical expression, so the two build bit-identical
+ * kernels and their output can be diffed sample for sample. A library routine
+ * would agree to about 15 digits, which is close enough for the filter and not
+ * close enough for the comparison.
+ */
+export const BESSEL_TERMS = 64;
+
 function besselI0(x) {
   let sum = 1, term = 1;
   const quarterSq = (x * x) / 4;
-  for (let k = 1; k < 64; k++) {
+  for (let k = 1; k < BESSEL_TERMS; k++) {
     term *= quarterSq / (k * k);
     sum += term;
-    if (term < sum * 1e-17) break;
   }
   return sum;
 }

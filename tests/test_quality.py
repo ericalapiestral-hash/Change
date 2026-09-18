@@ -140,6 +140,34 @@ class TestArtifacts:
                  / np.mean(fricative_noise[guard] ** 2))
         assert 10 * np.log10(error + 1e-30) < -50
 
+    @pytest.mark.parametrize("name", ["male_to_female", "female_to_male", "anonymous"])
+    @pytest.mark.parametrize("kind", ["t", "p", "k"])
+    def test_plosive_releases_survive_consonant_shifting(self, sample_rate, name, kind):
+        """A stop release is shorter than one unvoiced grain.
+
+        It therefore straddles two, and resampling each about its own centre
+        displaces the burst differently in each - overlap-add then sums two
+        copies a millisecond apart and the consonant is heard doubled.
+        Correlation against the input measured 0.28-0.84 before transient
+        grains were exempted from resampling.
+        """
+        from evaluate import burst_fidelity
+        from synth_speech import plosive_burst
+
+        burst = plosive_burst(sample_rate, 3.0, kind) * 0.5
+        n = sample_rate // 2
+        dry = np.zeros(n)
+        at = n // 2
+        dry[at:at + burst.size] += burst
+        dry += np.random.default_rng(2).normal(0, 2e-5, n)
+
+        profile = presets.get(name)
+        assert profile.shift_unvoiced, "this test is about the shifting path"
+        wet = convert(dry, sample_rate, profile)
+        correlation, level_db = burst_fidelity(dry, wet, (at - 200, at + burst.size + 200))
+        assert correlation > 0.95, f"{name} /{kind}/: correlation {correlation:.3f}"
+        assert abs(level_db) < 3.0, f"{name} /{kind}/: level moved {level_db:+.2f} dB"
+
     def test_shifting_consonants_moves_them_in_the_right_direction(
             self, fricative_noise, sample_rate):
         def centroid(x):

@@ -67,6 +67,23 @@ export const UNVOICED_RELOCK = 0.45;
  */
 export const MICRO_TIMING = 0.35;
 
+/**
+ * Short-term to average energy ratio above which an unvoiced grain is treated
+ * as containing a transient.
+ *
+ * A stop release is about three milliseconds long - shorter than one unvoiced
+ * grain - so it straddles two of them, and resampling each about its own
+ * centre displaces the burst by a different amount in each. Overlap-add then
+ * sums two copies a millisecond apart and the consonant is heard doubled.
+ * Grains carrying a transient are passed through unresampled instead. Bursts
+ * measure 4.4-4.6 on this statistic against at most 2.3 for steady fricatives,
+ * so the threshold sits in open space.
+ */
+export const TRANSIENT_CREST = 2.8;
+
+/** Averaging window for the short-term term above (0.5 ms). */
+export const TRANSIENT_WINDOW_SECONDS = 0.0005;
+
 const MARK_CAPACITY = 1024;
 const FRAME_CAPACITY = 256;
 
@@ -135,6 +152,7 @@ export class VoiceChanger {
     this.f0Hop = Math.max(1, Math.round(F0_HOP_SECONDS * sampleRate));
     this.unvoicedHop = Math.max(8, Math.round(UNVOICED_HOP_SECONDS * sampleRate));
     this.onsetLookahead = Math.max(0, Math.round((p.onsetLookaheadMs * sampleRate) / 1000));
+    this.transientWindow = Math.max(4, Math.round(TRANSIENT_WINDOW_SECONDS * sampleRate));
 
     // The tracker clamps periods to its own tauMax, which rounds up past
     // sampleRate/f0Min; budgeting from the nominal value leaves the longest
@@ -525,12 +543,17 @@ export class VoiceChanger {
         // each other even after resampling.
         coherent = true;
       } else {
+        // The gap to the next mark is random, so it cannot be guessed:
+        // waiting keeps synthesis exactly on the analysis grid instead of
+        // drifting and having to be pulled back. Checked before anything else
+        // is computed, so nothing is done twice.
+        if (idx + 1 >= this.markEnd) break;
         // Grain length stays fixed while spacing varies, which keeps
         // neighbouring grains overlapping enough to normalise cleanly.
         half = this.unvoicedHop;
         formant = shiftUnvoiced ? alpha : 1;
+        if (shiftUnvoiced && this._carriesTransient(markPos, half)) formant = 1;
         coherent = Math.abs(formant - 1) < 1e-4;
-        if (idx + 1 >= this.markEnd) break;  // the next gap is random; wait for it
       }
 
       const length = 2 * half;
@@ -578,6 +601,35 @@ export class VoiceChanger {
       if (a < b) i++;
     }
     return this.markStart + i;
+  }
+
+  /**
+   * Whether this unvoiced grain contains a plosive release: peak short-term
+   * energy against the grain's mean. A burst concentrates almost all of its
+   * energy into a fraction of the grain, a fricative spreads it evenly.
+   */
+  _carriesTransient(centre, half) {
+    const n = 2 * half;
+    const win = this.transientWindow;
+    let total = 0;
+    for (let i = 0; i < n; i++) {
+      const v = this.in.at(centre - half + i);
+      total += v * v;
+    }
+    const mean = total / n;
+    if (mean <= 1e-18) return false;
+    // Sliding sum of squares over the same data.
+    let running = 0, peak = 0;
+    for (let i = 0; i < n; i++) {
+      const v = this.in.at(centre - half + i);
+      running += v * v;
+      if (i >= win) {
+        const old = this.in.at(centre - half + i - win);
+        running -= old * old;
+      }
+      if (i >= win - 1 && running > peak) peak = running;
+    }
+    return Math.sqrt(peak / win / mean) > TRANSIENT_CREST;
   }
 
   _matchLoudness(dry, wet, n) {

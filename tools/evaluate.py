@@ -371,3 +371,35 @@ def jitter_shimmer(audio: np.ndarray, sample_rate: int, f0_hint: float,
         return jitter, float("nan")
     shimmer = float(np.mean(np.abs(np.diff(np.log(amplitudes)))))
     return jitter, shimmer
+
+
+def burst_fidelity(dry: np.ndarray, wet: np.ndarray, region, max_lag: int = 400):
+    """How intact a plosive release survives, as a correlation and a level error.
+
+    A stop release is three milliseconds long -- shorter than a single grain.
+    If it straddles two grains and each displaces it by a different amount, the
+    burst is smeared into two softer ones, which is heard as a doubled or
+    slurred consonant.  Correlating against the input after optimal alignment
+    separates that from a mere shift in time, which would be harmless.
+    """
+    start, stop = region
+    a = dry[start:stop] - np.mean(dry[start:stop])
+    lo = max(0, start - max_lag)
+    hi = min(wet.size, stop + max_lag)
+    b = wet[lo:hi] - np.mean(wet[lo:hi])
+    if a.size < 8 or b.size < a.size:
+        return float("nan"), float("nan")
+
+    from scipy import signal as _signal
+
+    corr = _signal.correlate(b, a, mode="valid")
+    energy_a = float(np.dot(a, a))
+    cum = np.concatenate(([0.0], np.cumsum(b * b)))
+    energy_b = cum[a.size:a.size + corr.size] - cum[:corr.size]
+    normalised = corr / np.sqrt(np.maximum(energy_a * energy_b, 1e-30))
+    best = int(np.argmax(np.abs(normalised)))
+
+    peak_in = float(np.max(np.abs(dry[start:stop])))
+    peak_out = float(np.max(np.abs(b[best:best + a.size])))
+    level_db = 20.0 * np.log10(max(peak_out, 1e-12) / max(peak_in, 1e-12))
+    return float(normalised[best]), level_db

@@ -72,6 +72,24 @@ UNVOICED_RELOCK = 0.45
 #: restoring it fully would add tracking noise on top of the real irregularity.
 MICRO_TIMING = 0.35
 
+#: Short-term to average energy ratio above which an unvoiced grain is treated
+#: as containing a transient.
+#:
+#: A stop release is about three milliseconds long -- shorter than one unvoiced
+#: grain -- so it straddles two of them, and resampling each about its own
+#: centre displaces the burst by a different amount in each.  Overlap-add then
+#: sums two copies a millisecond apart and the consonant is heard doubled.
+#: Measured: correlation against the input falls from 0.999 to 0.28-0.84 on
+#: /t/, /p/ and /k/ when consonant shifting is on.  Grains carrying a transient
+#: are therefore passed through unresampled, which costs a small spectral
+#: inconsistency between a release and the vowel after it and buys back an
+#: intact consonant.  Bursts measure 4.4-4.6 on this statistic against at most
+#: 2.3 for steady fricatives, so the threshold sits in open space.
+TRANSIENT_CREST = 2.8
+
+#: Averaging window for the short-term term above (0.5 ms).
+TRANSIENT_WINDOW_SECONDS = 0.0005
+
 
 
 
@@ -100,6 +118,7 @@ class VoiceChanger:
         self._loudness = RmsMatcher(sample_rate)
         self._f0_hop = max(1, int(round(F0_HOP_SECONDS * sample_rate)))
         self._onset_lookahead = max(0, int(round(p.onset_lookahead_ms * sample_rate / 1000.0)))
+        self._transient_window = max(4, int(round(TRANSIENT_WINDOW_SECONDS * sample_rate)))
         self._unvoiced_hop = max(8, int(round(UNVOICED_HOP_SECONDS * sample_rate)))
 
         # Worst-case grain reach decides the delay: emitting a sample needs
@@ -414,6 +433,8 @@ class VoiceChanger:
                 # neighbouring grains overlapping enough to normalise cleanly.
                 half = self._unvoiced_hop
                 formant = alpha if shift_unvoiced else 1.0
+                if shift_unvoiced and self._carries_transient(mark.position, half):
+                    formant = 1.0
                 resampler = (self._resampler if abs(formant - alpha) < 1e-9
                              else self._unity_resampler)
                 grain, window = build_grain(view, mark.position, half, formant, frac,
@@ -432,6 +453,27 @@ class VoiceChanger:
                 target = float(marks[idx + 1].position)
                 self._synth_pos += target - mark.position
                 self._synth_pos += UNVOICED_RELOCK * (target - self._synth_pos)
+
+    def _carries_transient(self, centre: int, half: int) -> bool:
+        """Whether this unvoiced grain contains a plosive release.
+
+        Peak short-term energy against the grain's mean: a burst concentrates
+        almost all of its energy into a fraction of the grain, a fricative
+        spreads it evenly.
+        """
+        segment = self._in.view(centre - half, centre + half)
+        power = segment * segment
+        mean = float(np.mean(power))
+        if mean <= 1e-18:
+            return False
+        # A trailing window rather than a centred one, purely so the browser
+        # port can compute the identical statistic with a running sum.
+        window = self._transient_window
+        if power.size < window:
+            return False
+        cumulative = np.concatenate(([0.0], np.cumsum(power)))
+        sums = cumulative[window:] - cumulative[:-window]
+        return bool(np.sqrt(float(np.max(sums)) / window / mean) > TRANSIENT_CREST)
 
     def _add_breath(self, wet: np.ndarray) -> np.ndarray:
         """Mix in a little aspiration noise.

@@ -21,7 +21,6 @@ implementations agree to -76 dB, far below anything the engine produces.
 from __future__ import annotations
 
 import numpy as np
-from scipy.special import i0
 
 #: Kernel half-width in output samples, before widening for compression.
 HALF_TAPS = 16
@@ -29,6 +28,26 @@ HALF_TAPS = 16
 PHASES = 512
 #: Kaiser shape; ~-80 dB stopband, which is 25 dB below the engine's own floor.
 BETA = 9.0
+#: Terms of the Bessel series used to build the Kaiser window.
+BESSEL_TERMS = 64
+
+
+def _bessel_i0(x: np.ndarray) -> np.ndarray:
+    """Modified Bessel function of the first kind, order zero.
+
+    A plain series with a fixed term count, not ``scipy.special.i0``.  The
+    browser port evaluates the identical expression, so the two build
+    bit-identical kernels and their output can be diffed sample for sample; a
+    library routine would agree to about fifteen digits, which is close enough
+    for the filter and not close enough for the comparison.
+    """
+    total = np.ones_like(x)
+    term = np.ones_like(x)
+    quarter = (x * x) / 4.0
+    for k in range(1, BESSEL_TERMS):
+        term = term * (quarter / (k * k))
+        total = total + term
+    return total
 
 
 class GrainResampler:
@@ -55,7 +74,8 @@ class GrainResampler:
         window = np.zeros_like(x)
         inside = np.abs(x) <= self.half
         scaled = x[inside] / self.half
-        window[inside] = i0(beta * np.sqrt(np.maximum(1.0 - scaled * scaled, 0.0))) / i0(beta)
+        window[inside] = (_bessel_i0(beta * np.sqrt(np.maximum(1.0 - scaled * scaled, 0.0)))
+                          / _bessel_i0(np.array(beta)))
 
         table = np.sinc(cutoff * x) * window
         # Unity DC gain per phase: truncating the sinc otherwise leaves a
