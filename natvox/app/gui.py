@@ -564,16 +564,10 @@ class Window(QtWidgets.QWidget):
         from . import update
 
         try:
-            archive = update.download(
+            self._staged = update.fetch_and_stage(
                 release,
                 progress=lambda done, total: setattr(
                     self, "_download", (done, total)))
-            install = update.install_dir()
-            if install is None:
-                return (f"downloaded and checked, but this is a checkout "
-                        f"rather than a downloaded build -- use git. "
-                        f"({archive})")
-            self._staged = update.stage(archive, install)
             return (f"{release.short} is downloaded and its checksum checks "
                     "out. Close the program and it installs itself.")
         except update.UpdateError as exc:

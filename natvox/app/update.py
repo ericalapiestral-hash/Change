@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -53,6 +54,10 @@ API_HOST = "api.github.com"
 #: about 93 MB.
 MAX_ASSET_BYTES = 400 * 1024 * 1024
 
+#: And refused above this once unpacked, which the compressed size does not
+#: bound: a 93 MB zip can name terabytes.  The bundle unpacks to about 250 MB.
+MAX_UNPACKED_BYTES = 2 * 1024 * 1024 * 1024
+
 #: Where a token is read from, when the repository is private.
 #:
 #: Read, never written: this module does not store credentials, so there is
@@ -65,46 +70,130 @@ STAGING = ".natvox-staged"
 
 CONNECT_TIMEOUT = 20.0
 
-#: Waits for the process to go, renames the install aside, renames the staged
-#: copy into place, and puts the old one back if the second rename fails.  The
-#: last line deletes the script itself, which is legal for a batch file only
-#: after `(goto) 2>nul` closes the interpreter's handle on it.
+#: Whole-download budget.  A per-read timeout bounds nothing on its own: a
+#: socket delivering one byte a minute never times out and never finishes.
+DOWNLOAD_DEADLINE = 900.0
+
+#: Waits for the process to go, then swaps two sibling directories by renaming.
+#:
+#: Every step is checked, because the failure this must not have is "the user
+#: has no program any more".  In particular:
+#:
+#:  * `move a b` on Windows puts `a` *inside* `b` when `b` is an existing
+#:    directory, so both destinations are proved gone before either move.
+#:  * The rollback is checked too.  An unchecked rollback that fails is the one
+#:    path that ends with nothing installed at all.
+#:  * The old copy is kept until the new one has been shown to contain a
+#:    program, and is only ever removed after being confirmed to be one.
+#:  * The rename is retried, because another copy of the program may still be
+#:    holding a file when this one has gone.  Waiting is the right answer to a
+#:    lock; giving up halfway is not.
 _WINDOWS_SWAP = """@echo off
 setlocal
 set "PID=%~1"
 set "INSTALL=%~2"
 set "STAGED=%~3"
 set "OLD=%INSTALL%.old"
+set "LEFT=%~4"
+
 :wait
 tasklist /FI "PID eq %PID%" 2>nul | find "%PID%" >nul
 if not errorlevel 1 (
   ping -n 2 127.0.0.1 >nul
   goto wait
 )
-if exist "%OLD%" rmdir /s /q "%OLD%"
-move "%INSTALL%" "%OLD%" >nul
-if errorlevel 1 exit /b 1
-move "%STAGED%" "%INSTALL%" >nul
-if errorlevel 1 (
-  move "%OLD%" "%INSTALL%" >nul
+
+if exist "%OLD%\\natvox.exe" rmdir /s /q "%OLD%"
+if exist "%OLD%" (
+  echo cannot clear "%OLD%"; leaving everything as it is
   exit /b 1
 )
-if exist "%OLD%" rmdir /s /q "%OLD%"
+if not exist "%STAGED%\\natvox.exe" (
+  echo "%STAGED%" is not a natvox build; leaving everything as it is
+  exit /b 1
+)
+
+:aside
+move "%INSTALL%" "%OLD%" >nul 2>&1
+if not exist "%OLD%\\natvox.exe" (
+  set /a LEFT-=1
+  if %LEFT% GTR 0 (
+    ping -n 2 127.0.0.1 >nul
+    goto aside
+  )
+  echo could not move "%INSTALL%" aside; leaving everything as it is
+  exit /b 1
+)
+
+if exist "%INSTALL%" rmdir /q "%INSTALL%" 2>nul
+if exist "%INSTALL%" goto rollback
+move "%STAGED%" "%INSTALL%" >nul 2>&1
+if not exist "%INSTALL%\\natvox.exe" goto rollback
+
+rmdir /s /q "%OLD%"
 @RELAUNCH@
 (goto) 2>nul & rmdir /s /q "%~dp0"
+exit /b 0
+
+:rollback
+if exist "%INSTALL%" rmdir /s /q "%INSTALL%"
+move "%OLD%" "%INSTALL%" >nul 2>&1
+if exist "%INSTALL%\\natvox.exe" (
+  echo the update failed and the old copy is back
+  exit /b 1
+)
+echo THE UPDATE FAILED AND SO DID PUTTING IT BACK.
+echo Your program is in "%OLD%" -- rename that to "%INSTALL%".
+exit /b 2
 """
 
 _POSIX_SWAP = """#!/bin/sh
 PID="$1"; INSTALL="$2"; STAGED="$3"; OLD="$2.old"
+LEFT="$4"
 while kill -0 "$PID" 2>/dev/null; do sleep 1; done
-rm -rf "$OLD"
-mv "$INSTALL" "$OLD" || exit 1
-mv "$STAGED" "$INSTALL" || { mv "$OLD" "$INSTALL"; exit 1; }
+
+if [ -e "$OLD/natvox" ]; then rm -rf "$OLD"; fi
+if [ -e "$OLD" ]; then
+  echo "cannot clear $OLD; leaving everything as it is" >&2
+  exit 1
+fi
+if [ ! -e "$STAGED/natvox" ]; then
+  echo "$STAGED is not a natvox build; leaving everything as it is" >&2
+  exit 1
+fi
+
+while [ ! -e "$OLD/natvox" ]; do
+  mv "$INSTALL" "$OLD" 2>/dev/null
+  if [ -e "$OLD/natvox" ]; then break; fi
+  LEFT=$((LEFT - 1))
+  if [ "$LEFT" -le 0 ]; then
+    echo "could not move $INSTALL aside; leaving everything as it is" >&2
+    exit 1
+  fi
+  sleep 1
+done
+
+rmdir "$INSTALL" 2>/dev/null
+ok=1
+if [ -e "$INSTALL" ]; then ok=0; fi
+if [ "$ok" = 1 ]; then mv "$STAGED" "$INSTALL" 2>/dev/null || ok=0; fi
+if [ ! -e "$INSTALL/natvox" ]; then ok=0; fi
+if [ "$ok" = 0 ]; then
+  rm -rf "$INSTALL"
+  if mv "$OLD" "$INSTALL" 2>/dev/null && [ -e "$INSTALL/natvox" ]; then
+    echo "the update failed and the old copy is back" >&2
+    exit 1
+  fi
+  echo "THE UPDATE FAILED AND SO DID PUTTING IT BACK." >&2
+  echo "Your program is in $OLD -- rename that to $INSTALL." >&2
+  exit 2
+fi
+
 rm -rf "$OLD"
 @RELAUNCH@
 rm -rf "$(dirname "$0")"
+exit 0
 """
-
 
 
 class UpdateError(RuntimeError):
@@ -118,6 +207,14 @@ class Release:
     tag: str
     commit: str
     asset: str
+    #: The *API* asset URL, not ``browser_download_url``.
+    #:
+    #: The browser URL needs a browser session: on a private repository it
+    #: answers an authenticated API token with 404, so an updater built on it
+    #: can never install anything.  The API URL takes the same token, answers
+    #: with ``Accept: application/octet-stream``, and redirects to a signed
+    #: store -- which is why the redirect handler above has to strip the
+    #: credential rather than merely being careful.
     url: str
     size: int
     #: ``sha256:<hex>`` as GitHub publishes it.
@@ -165,11 +262,11 @@ def _opener() -> urllib.request.OpenerDirector:
     return urllib.request.build_opener(_DropAuthOnRedirect())
 
 
-def _request(url: str, token: str | None):
-    if not url.startswith("https://"):
+def _request(url: str, token: str | None, accept: str = "application/vnd.github+json"):
+    if not url.lower().startswith("https://"):
         raise UpdateError(f"refusing to fetch over plain HTTP: {url}")
     request = urllib.request.Request(url, headers={
-        "Accept": "application/vnd.github+json",
+        "Accept": accept,
         "User-Agent": f"natvox/{__version__}",
         "X-GitHub-Api-Version": "2022-11-28",
     })
@@ -211,8 +308,23 @@ def check(repo: str = REPO, tag: str = TAG, token: str | None = None,
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise UpdateError(f"could not reach GitHub: {exc}") from exc
     except json.JSONDecodeError as exc:
-        raise UpdateError("GitHub sent something that is not JSON") from exc
+        raise UpdateError(
+            "the reply was not JSON. If this machine is behind a network that "
+            "shows a login page, that is what answered.") from exc
 
+    try:
+        return _release_from(payload, tag)
+    except UpdateError:
+        raise
+    except Exception as exc:                     # noqa: BLE001 - see below
+        # A malformed payload is a KeyError or a TypeError or a ValueError
+        # depending on which field is wrong, and a traceback is not an answer
+        # to "is there an update".
+        raise UpdateError(f"GitHub's reply was not shaped like a release: "
+                          f"{type(exc).__name__}") from exc
+
+
+def _release_from(payload: dict, tag: str) -> Release:
     assets = [a for a in payload.get("assets", [])
               if str(a.get("name", "")).endswith(".zip")]
     if not assets:
@@ -232,7 +344,7 @@ def check(repo: str = REPO, tag: str = TAG, token: str | None = None,
         tag=str(payload.get("tag_name") or tag),
         commit=str(payload.get("target_commitish") or ""),
         asset=str(asset["name"]),
-        url=str(asset["browser_download_url"]),
+        url=str(asset["url"]),
         size=size,
         digest=digest,
         published=str(payload.get("published_at") or ""),
@@ -259,7 +371,8 @@ def install_dir() -> Path | None:
 
 def download(release: Release, into: Path | None = None,
              token: str | None = None, progress=None,
-             timeout: float = CONNECT_TIMEOUT) -> Path:
+             timeout: float = CONNECT_TIMEOUT,
+             deadline_seconds: float = DOWNLOAD_DEADLINE) -> Path:
     """Fetch the asset and verify its digest.  Returns the file.
 
     The hash is computed while the bytes arrive rather than afterwards, so a
@@ -273,37 +386,46 @@ def download(release: Release, into: Path | None = None,
 
     digest = hashlib.sha256()
     written = 0
+    # A per-read timeout does not bound anything: a socket delivering one byte
+    # a minute never times out and never finishes.
+    deadline = time.monotonic() + max(deadline_seconds, timeout)
     try:
-        with _opener().open(_request(release.url, token),
-                            timeout=timeout) as response:
+        with _opener().open(
+                _request(release.url, token, accept="application/octet-stream"),
+                timeout=timeout) as response:
             with open(target, "wb") as handle:
                 while True:
                     chunk = response.read(1 << 16)
                     if not chunk:
                         break
                     written += len(chunk)
-                    if written > MAX_ASSET_BYTES:
+                    if written > release.size:
                         raise UpdateError("the download kept going past the "
                                           "size GitHub said it was")
+                    if time.monotonic() > deadline:
+                        raise UpdateError(
+                            f"the download was still going after "
+                            f"{deadline_seconds:.0f} seconds; giving up")
                     digest.update(chunk)
                     handle.write(chunk)
                     if progress:
                         progress(written, release.size)
+        if written != release.size:
+            raise UpdateError(f"got {written} bytes where GitHub said "
+                              f"{release.size}")
+        if digest.hexdigest().lower() != wanted:
+            raise UpdateError(
+                "the download does not match the checksum GitHub published. "
+                "Nothing has been installed.")
     except UpdateError:
         target.unlink(missing_ok=True)
         raise
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    except Exception as exc:                     # noqa: BLE001 - see below
+        # A truncated response is an http.client.IncompleteRead, which is not
+        # an OSError; a proxy closing the connection is something else again.
+        # Every one of them has to leave no partial file behind.
         target.unlink(missing_ok=True)
         raise UpdateError(f"the download failed: {exc}") from exc
-
-    if written != release.size:
-        target.unlink(missing_ok=True)
-        raise UpdateError(f"got {written} bytes where GitHub said {release.size}")
-    if digest.hexdigest().lower() != wanted:
-        target.unlink(missing_ok=True)
-        raise UpdateError(
-            "the download does not match the checksum GitHub published. "
-            "Nothing has been installed.")
     return target
 
 
@@ -317,11 +439,23 @@ def stage(archive: Path, beside: Path) -> Path:
     staged = beside.parent / STAGING
     if staged.exists():
         shutil.rmtree(staged, ignore_errors=True)
-    staged.mkdir(parents=True)
+    if staged.exists():
+        raise UpdateError(
+            f"cannot clear {staged} -- something is holding a file in it. "
+            "Close any other copy of the program and try again.")
+    try:
+        staged.mkdir(parents=True)
+    except OSError as exc:
+        raise UpdateError(f"cannot make room to unpack: {exc}") from exc
     root = staged.resolve()
     done = False
     try:
         with zipfile.ZipFile(archive) as bundle:
+            total = sum(max(0, info.file_size) for info in bundle.infolist())
+            if total > MAX_UNPACKED_BYTES:
+                raise UpdateError(
+                    f"that archive unpacks to {total / 1e9:.1f} GB, which is "
+                    "not a build of this program")
             for entry in bundle.namelist():
                 # A zip can name ../ or an absolute path.  Compared as paths
                 # and not as strings: "/tmp/natvox-staged-evil" starts with
@@ -332,8 +466,12 @@ def stage(archive: Path, beside: Path) -> Path:
                                       f"itself: {entry!r}")
             bundle.extractall(staged)
         done = True
-    except (zipfile.BadZipFile, OSError) as exc:
+    except zipfile.BadZipFile as exc:
         raise UpdateError(f"the download is not a usable zip: {exc}") from exc
+    except OSError as exc:
+        # Disk full, permission denied and an antivirus holding a file all
+        # arrive here, and none of them is the archive being bad.
+        raise UpdateError(f"could not unpack it: {exc}") from exc
     finally:
         # Any failure at all, not just a bad zip: a refusal that leaves half an
         # archive behind would be installed by the next attempt.
@@ -373,8 +511,14 @@ def _swap_script(relaunch: bool) -> tuple[Path, list[str]]:
     return script, ["/bin/sh", str(script)]
 
 
+#: How many times the swap retries a rename before giving up, at a second
+#: apart.  Another copy of the program may still be holding a file when this
+#: one has gone, and waiting is the right answer to a lock.
+SWAP_RETRIES = 60
+
+
 def apply(staged: Path, install: Path | None = None, relaunch: bool = True,
-          spawn=subprocess.Popen) -> Path:
+          spawn=subprocess.Popen, retries: int = SWAP_RETRIES) -> Path:
     """Hand the swap to a detached script and return it.
 
     The caller is expected to exit promptly after this: the script is waiting
@@ -397,7 +541,8 @@ def apply(staged: Path, install: Path | None = None, relaunch: bool = True,
         raise UpdateError("the staged copy is not beside the install, so the "
                           "swap would be a copy rather than a rename")
     script, command = _swap_script(relaunch)
-    command = command + [str(os.getpid()), str(install), str(staged)]
+    command = command + [str(os.getpid()), str(install), str(staged),
+                         str(max(1, int(retries)))]
     flags = {}
     if os.name == "nt":
         # Detached, or the script dies with the process it is waiting for.
@@ -406,6 +551,27 @@ def apply(staged: Path, install: Path | None = None, relaunch: bool = True,
         flags["start_new_session"] = True
     spawn(command, cwd=str(install.parent), **flags)
     return script
+
+
+def fetch_and_stage(release: Release, install: Path | None = None,
+                    token: str | None = None, progress=None) -> Path:
+    """Download, verify, unpack, and leave nothing behind but the staged copy.
+
+    The install directory is resolved *first*.  Finding out that there is
+    nothing here to replace is a thing to learn before 93 MB, not after.
+    """
+    install = Path(install) if install else install_dir()
+    if install is None:
+        raise UpdateError(
+            "this is running from a checkout, not a downloaded build, so "
+            "there is nothing here to replace -- use git")
+    folder = Path(tempfile.mkdtemp(prefix="natvox-update-"))
+    try:
+        archive = download(release, into=folder, token=token, progress=progress)
+        return stage(archive, install)
+    finally:
+        # 93 MB in the temp directory either way.  Nobody else is going to.
+        shutil.rmtree(folder, ignore_errors=True)
 
 
 def discard(install: Path | None = None) -> None:

@@ -29,6 +29,10 @@ def release_json(*, digest=None, size=None, name="natvox-0.3.0-windows-x64.zip",
         "body": "release notes",
         "assets": assets if assets is not None else [{
             "name": name,
+            # The API URL is the one that works on a private repository; the
+            # browser one answers a token with 404.  Both are present on a
+            # real payload, which is how the wrong one got picked.
+            "url": "https://api.github.com/repos/o/r/releases/assets/1",
             "browser_download_url":
                 f"https://github.com/o/r/releases/download/desktop-build/{name}",
             "size": 93 * 1024 * 1024 if size is None else size,
@@ -55,7 +59,7 @@ def serving(monkeypatch, payload=None, body=None, error=None):
             calls.append(request)
             if error is not None:
                 raise error
-            if body is not None and "releases/download" in request.full_url:
+            if body is not None and "releases/assets" in request.full_url:
                 return FakeResponse(body)
             return FakeResponse(json.dumps(payload).encode())
 
@@ -69,6 +73,8 @@ class TestChecking:
         serving(monkeypatch, release_json())
         release = update.check()
         assert release.commit == "a" * 40
+        assert release.url.startswith("https://api.github.com/"), \
+            "browser_download_url answers a token with 404 on a private repo"
         assert release.short == "aaaaaaa"
         assert release.digest.startswith("sha256:")
         assert release.megabytes == pytest.approx(93.0, abs=0.5)
@@ -84,6 +90,24 @@ class TestChecking:
     def test_an_impossible_size_is_refused(self, monkeypatch, size):
         serving(monkeypatch, release_json(size=size))
         with pytest.raises(update.UpdateError, match="not a build"):
+            update.check()
+
+    def test_a_malformed_payload_is_a_sentence_not_a_traceback(self, monkeypatch):
+        # Passes every explicit check and then has no url: a KeyError, which
+        # is not an answer to "is there an update".
+        serving(monkeypatch, release_json(assets=[{
+            "name": "n.zip", "size": 1000, "digest": "sha256:" + "b" * 64}]))
+        with pytest.raises(update.UpdateError, match="not shaped like a release"):
+            update.check()
+
+    def test_a_login_page_where_json_should_be_says_so(self, monkeypatch):
+        class Opener:
+            def open(self, request, timeout=None):
+                return FakeResponse(b"<html>sign in</html>")
+
+        monkeypatch.setattr(update, "_opener", lambda: Opener())
+        monkeypatch.delenv(update.TOKEN_ENV, raising=False)
+        with pytest.raises(update.UpdateError, match="login page"):
             update.check()
 
     def test_a_release_with_no_zip_says_so(self, monkeypatch):
@@ -150,7 +174,7 @@ class TestDownloading:
         digest = hashlib.sha256(body).hexdigest()
         return update.Release(
             tag="desktop-build", commit="c" * 40, asset="natvox.zip",
-            url="https://github.com/o/r/releases/download/t/natvox.zip",
+            url="https://api.github.com/repos/o/r/releases/assets/1",
             size=len(body), digest="sha256:" + digest, published="2026-09-18")
 
     def test_a_good_download_is_kept(self, monkeypatch, tmp_path):
@@ -324,20 +348,87 @@ class TestApplying:
         with pytest.raises(update.UpdateError, match="use git"):
             update.apply(staged, None, spawn=lambda *a, **k: None)
 
-    def test_the_script_puts_the_old_copy_back_if_the_swap_fails(self):
-        """A failure halfway must leave a program that starts."""
-        script, _ = update._swap_script(relaunch=False)
-        body = script.read_text()
-        assert body.count("OLD") >= 4
-        if script.suffix == ".sh":
-            assert 'mv "$OLD" "$INSTALL"' in body
-        else:
-            assert 'move "%OLD%" "%INSTALL%"' in body
-
     def test_the_script_cleans_itself_up(self):
         script, _ = update._swap_script(relaunch=False)
         body = script.read_text()
         assert "rm -rf" in body or "rmdir" in body
+
+
+class TestTheSwapForReal:
+    """The swap script, run.
+
+    Reading a shell script and asserting on its text proves the text. This is
+    the one piece of the program that can leave somebody with nothing that
+    starts, so it gets executed instead -- the batch file on Windows and the
+    shell script elsewhere, each on the platform that runs it.
+    """
+
+    LAUNCHER = "natvox.exe" if os.name == "nt" else "natvox"
+
+    def _tree(self, tmp_path, staged_is_a_build=True, stale_old=False):
+        install = tmp_path / "natvox"
+        install.mkdir()
+        (install / self.LAUNCHER).write_text("OLD BUILD")
+        (install / "_internal").mkdir()
+        (install / "_internal" / "lib").write_text("old")
+        staged = tmp_path / update.STAGING
+        staged.mkdir()
+        if staged_is_a_build:
+            (staged / self.LAUNCHER).write_text("NEW BUILD")
+            (staged / "_internal").mkdir()
+            (staged / "_internal" / "lib").write_text("new")
+        if stale_old:
+            (tmp_path / "natvox.old").mkdir()
+            (tmp_path / "natvox.old" / "precious.txt").write_text("not ours")
+        return install, staged
+
+    def _run(self, install, staged):
+        import subprocess
+
+        script, command = update._swap_script(relaunch=False)
+        # A PID that is not running, so the wait loop falls straight through.
+        # Two retries rather than the shipped sixty: the retry exists for a
+        # file another copy of the program is still holding, and a test that
+        # waits a minute to prove it gives up is a test nobody runs.
+        return subprocess.run(
+            command + ["999999", str(install), str(staged), "2"],
+            capture_output=True, text=True, timeout=120)
+
+    def test_it_swaps(self, tmp_path):
+        install, staged = self._tree(tmp_path)
+        result = self._run(install, staged)
+        assert result.returncode == 0, result.stderr
+        assert (install / self.LAUNCHER).read_text() == "NEW BUILD"
+        assert (install / "_internal" / "lib").read_text() == "new"
+        assert not staged.exists(), "and takes the staging directory with it"
+        assert not (tmp_path / "natvox.old").exists(), "and the old copy"
+
+    def test_a_staged_directory_with_no_program_in_it_is_refused(self, tmp_path):
+        """Better to install nothing than to install nothing that runs."""
+        install, staged = self._tree(tmp_path, staged_is_a_build=False)
+        result = self._run(install, staged)
+        assert result.returncode == 1
+        assert (install / self.LAUNCHER).read_text() == "OLD BUILD"
+        assert (install / "_internal" / "lib").read_text() == "old"
+
+    def test_it_will_not_delete_a_directory_it_did_not_make(self, tmp_path):
+        """`natvox.old` is rmdir /s /q-ed. If somebody else's directory is
+        sitting at that name, that is not a thing to delete quietly."""
+        install, staged = self._tree(tmp_path, stale_old=True)
+        result = self._run(install, staged)
+        assert result.returncode == 1
+        assert (tmp_path / "natvox.old" / "precious.txt").exists()
+        assert (install / self.LAUNCHER).read_text() == "OLD BUILD"
+
+    def test_a_missing_install_leaves_the_staged_copy_alone(self, tmp_path):
+        """It gives up rather than half-installing: there is nothing to move
+        aside, so there is nothing to put back if the rest goes wrong."""
+        install, staged = self._tree(tmp_path)
+        import shutil
+        shutil.rmtree(install)
+        result = self._run(install, staged)
+        assert result.returncode == 1
+        assert (staged / self.LAUNCHER).read_text() == "NEW BUILD"
 
 
 class TestWhatItTellsYou:

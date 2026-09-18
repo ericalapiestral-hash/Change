@@ -379,7 +379,8 @@ class TestAnswers:
         from natvox.app import update
 
         release = update.Release("desktop-build", "c" * 40, "n.zip",
-                                 "https://x/n.zip", 1000, "sha256:" + "d" * 64,
+                                 "https://api.github.com/repos/o/r/releases/assets/1",
+                                 1000, "sha256:" + "d" * 64,
                                  "2026-09-18T00:00:00Z")
         monkeypatch.setattr(update, "state",
                             lambda **k: update.UpdateState("abc1234", release))

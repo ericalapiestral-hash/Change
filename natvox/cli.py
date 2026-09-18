@@ -335,15 +335,8 @@ def cmd_update(args) -> int:
                   f"{total / 1048576:.0f} MB", file=sys.stderr)
 
     try:
-        archive = update.download(release, progress=progress)
-        install = update.install_dir()
-        if install is None:
-            print(f"\ndownloaded and checked: {archive}")
-            print("this is a checkout rather than a downloaded build, so "
-                  "nothing was replaced -- use git")
-            return 0
-        staged = update.stage(archive, install)
-        update.apply(staged, install, relaunch=False)
+        staged = update.fetch_and_stage(release, progress=progress)
+        update.apply(staged, relaunch=False)
     except update.UpdateError as exc:
         print(str(exc), file=sys.stderr)
         return 1

@@ -192,7 +192,8 @@ class TestUpdate:
         from natvox.app import update
 
         release = update.Release("desktop-build", "c" * 40, "n.zip",
-                                 "https://x/n.zip", 1000, "sha256:" + "d" * 64,
+                                 "https://api.github.com/repos/o/r/releases/assets/1",
+                                 1000, "sha256:" + "d" * 64,
                                  "2026-09-18T00:00:00Z")
         monkeypatch.setattr(update, "state",
                             lambda **k: update.UpdateState("abc1234", release))
@@ -221,19 +222,23 @@ class TestUpdate:
         assert main(["app", "--update"]) == 1
         assert "could not reach" in capsys.readouterr().out
 
-    def test_installing_from_a_checkout_says_use_git(self, capsys, monkeypatch,
-                                                     tmp_path):
+    def test_installing_from_a_checkout_says_use_git_before_downloading(
+            self, capsys, monkeypatch):
+        """Finding out there is nothing here to replace is a thing to learn
+        before 93 MB, not after."""
         from natvox.app import update
 
         release = update.Release("desktop-build", "c" * 40, "n.zip",
-                                 "https://x/n.zip", 1000, "sha256:" + "d" * 64,
+                                 "https://api.github.com/repos/o/r/releases/assets/1",
+                                 1000, "sha256:" + "d" * 64,
                                  "2026-09-18T00:00:00Z")
         monkeypatch.setattr(update, "state",
                             lambda **k: update.UpdateState("abc1234", release))
-        monkeypatch.setattr(update, "download", lambda *a, **k: tmp_path / "n.zip")
-        monkeypatch.setattr(update, "install_dir", lambda: None)
-        assert main(["app", "--update", "--install"]) == 0
-        assert "use git" in capsys.readouterr().out
+        downloaded = []
+        monkeypatch.setattr(update, "download", lambda *a, **k: downloaded.append(a))
+        assert main(["app", "--update", "--install"]) == 1
+        assert "use git" in capsys.readouterr().err
+        assert not downloaded, "it must refuse before the download, not after"
 
 
 class TestTune:

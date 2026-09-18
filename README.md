@@ -633,6 +633,18 @@ workflow and read back from `natvox/_build.py`. And because this repository is
 private, GitHub answers an unauthenticated request with **404 rather than 403**;
 put a read-scoped token in `NATVOX_GITHUB_TOKEN` and the message says so.
 
+The first version of all this was reviewed by five readers told to break it,
+and the headline finding was that it could never have worked: the download used
+`browser_download_url`, which needs a browser session and answers an API token
+with 404 on a private repository. Verified against the live release — 404 from
+that URL, 206 and 97,649,147 bytes from the API asset URL beside it in the same
+JSON. The check would have succeeded, the download would have failed, every
+time. The swap script's rollback was also unchecked, which is the one path that
+ends with nothing installed at all. Both are fixed, and the swap script is now
+*run* by the tests rather than pattern-matched — the batch file on Windows CI
+and the shell script here, each proving that a refusal leaves the old copy
+working.
+
 ## Server
 
 ```bash
@@ -689,7 +701,7 @@ reconstructs to −322 dB. It has **not** been run against a real checkpoint.
 
 ```bash
 pip install -e '.[dev]'
-pytest                      # 673 tests
+pytest                      # 678 tests
 python tools/bench.py       # artifact measurements
 
 cd web && npm install && npm test     # 127 more, including the live path

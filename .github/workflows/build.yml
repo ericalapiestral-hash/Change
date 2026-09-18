@@ -51,7 +51,11 @@ jobs:
           $text = $text -replace 'COMMIT = ""', ('COMMIT = "' + $env:GITHUB_SHA + '"')
           $text = $text -replace 'BUILT = ""', ('BUILT = "' + $stamp + '"')
           Set-Content -Path natvox/_build.py -Value $text -Encoding utf8 -NoNewline
-          python -c "from natvox._build import installed, BUILT; print('stamped', installed(), BUILT)"
+          # One line, because a PowerShell here-string is not indented and
+          # breaks the YAML.  It has to be able to FAIL: an unstamped bundle
+          # never offers an update and nothing downstream would notice.
+          python -c "import sys; from natvox._build import COMMIT, BUILT, installed; sys.exit('the stamp did not take: %r %r' % (COMMIT, BUILT)) if len(COMMIT) != 40 or not BUILT else print('stamped', installed(), BUILT)"
+          if ($LASTEXITCODE -ne 0) { throw "the build was not stamped" }
 
       - name: Build
         working-directory: packaging
