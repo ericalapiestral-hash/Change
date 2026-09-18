@@ -276,6 +276,17 @@ def cmd_app(args) -> int:
     return gui_main([sys.argv[0]])
 
 
+#: Every subcommand name.
+#:
+#: The bundled executable prepends ``app`` to whatever it is given, so that
+#: ``natvox-cli.exe --check`` works without anybody typing ``app``.  Prepending
+#: it to a *subcommand* turns ``natvox-cli.exe devices`` -- which is what the
+#: README shows for the unbundled program -- into an argparse error about an
+#: unrecognised argument.  A test checks this against the parser itself, so a
+#: new subcommand cannot be added without it.
+SUBCOMMANDS = ("presets", "process", "devices", "live", "serve", "app")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="natvox", description=__doc__,

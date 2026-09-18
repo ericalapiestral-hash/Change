@@ -39,8 +39,12 @@ def main(argv: list[str] | None = None) -> int:
     if not args and not is_console_build():
         from natvox.app.gui import main as gui
         return gui([sys.argv[0]])
-    from natvox.cli import main as cli
-    return cli(["app"] + args)
+    from natvox.cli import SUBCOMMANDS, main as cli
+    # `app` is implied, so that `natvox-cli.exe --check` works without anybody
+    # typing it -- but only when what follows is not itself a subcommand.  The
+    # README shows `natvox devices`, and someone typing that here should get a
+    # device listing rather than an error about an unrecognised argument.
+    return cli(args if args and args[0] in SUBCOMMANDS else ["app"] + args)
 
 
 if __name__ == "__main__":

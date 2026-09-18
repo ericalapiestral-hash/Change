@@ -116,6 +116,54 @@ class TestDevices:
         assert "3.0ms" in lines[0] and "90.0ms" in lines[1]
 
 
+class TestTheBundledEntryPoint:
+    """`natvox-cli.exe` implies `app`, which is a trap for the other names."""
+
+    @pytest.fixture
+    def entry(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packaging"))
+        import entry as module
+        return module
+
+    def test_the_list_of_subcommands_is_the_parser_s_own(self):
+        import argparse
+
+        from natvox.cli import SUBCOMMANDS, build_parser
+
+        actions = [a for a in build_parser()._actions
+                   if isinstance(a, argparse._SubParsersAction)]
+        assert len(actions) == 1
+        assert set(actions[0].choices) == set(SUBCOMMANDS)
+
+    def test_a_flag_is_handed_to_app(self, entry, capsys):
+        assert entry.main(["--check", "--seconds", "0.05"]) == 0
+        assert "blocks:" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("console", [True, False])
+    def test_no_arguments_at_all_is_not_an_index_error(self, entry, monkeypatch,
+                                                       console):
+        """Both builds with nothing after them open the window.
+
+        Parameterised on the build because they take different routes there --
+        the windowed one returns before it looks at the arguments and the
+        console one goes through the parser -- so a test that only covers the
+        first would pass while `natvox-cli.exe` raised IndexError on its own
+        empty argument list.
+        """
+        opened = []
+        monkeypatch.setattr(entry, "is_console_build", lambda: console)
+        monkeypatch.setattr("natvox.app.gui.main",
+                            lambda argv: opened.append(argv) or 0)
+        assert entry.main([]) == 0
+        assert opened
+
+    def test_a_subcommand_is_not(self, entry, capsys):
+        """`natvox-cli.exe devices` is what the README shows for the
+        unbundled program, and it has to mean the same thing here."""
+        assert entry.main(["presets"]) == 0
+        assert "female_soft" in capsys.readouterr().out
+
+
 class TestLoopback:
     def test_it_says_what_went_wrong_rather_than_raising(self, capsys):
         """No sound card here, so this is the real failure path."""
