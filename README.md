@@ -16,6 +16,18 @@ natvox live --preset female                    # microphone -> output
 natvox serve                                   # HTTP + WebSocket API
 ```
 
+Or as a desktop program, which is the same engine with a window on it:
+
+```bash
+pip install -e '.[app]'
+natvox app                 # pick a microphone, pick a voice, hold space to A/B
+natvox app --check         # first: can this computer keep up?
+```
+
+`packaging/` builds it into something that runs without Python
+(`pyinstaller packaging/natvox.spec`), and explains the virtual audio cable
+that gets it into a game or a call.
+
 Or run it live in a browser, with an interface built for judging whether it
 sounds converted - instant A/B against a delay-matched dry signal, a loop
 recorder, and a pitch histogram for setting the one parameter that matters
@@ -261,6 +273,45 @@ The rule for what may change is the budget and nothing else: `set()` builds the
 engine the request describes and accepts it if its delay fits, naming the
 shortfall in milliseconds if it does not.
 
+## Desktop program
+
+```bash
+natvox app
+```
+
+One window: microphone and output device, a voice, six sliders, meters, and
+the A/B on the space bar. The logic is in `natvox/app/core.py` with no toolkit
+in it, and the window in `natvox/app/gui.py` reads it and paints it — which is
+what lets the whole program be tested with no screen and no sound card. The
+tests run it against a WAV file as the microphone, through the real window and
+the real engine.
+
+Three things it will tell you rather than make you guess:
+
+| | |
+|---|---|
+| **Can this computer keep up?** | Runs the engine at each buffer size and reports the *worst* block against its deadline. The average never drops out; the worst block is what clicks. |
+| **What is it costing?** | Latency, pitch, load and dropouts while it runs, live. |
+| **Is converting elsewhere worth it?** | Point it at a machine running `natvox serve` and it measures the round trip and the jitter on that link, then says what it would cost end to end. |
+
+### Converting on another machine
+
+It can, and mostly it should not. The engine uses 14–28% of *one core* at a
+256-frame buffer and no GPU at all, so there is nothing to offload; what
+remote conversion adds is a network round trip **and** a buffer deep enough to
+absorb the variation in it, on top of a delay that is already 60 ms. The
+protocol itself costs 0.8–1.6 ms on loopback, measured — everything past that
+is the network.
+
+Jitter decides it, not distance: a link with a 120 ms round trip and no
+variation needs less buffer than one with 8 ms and a lot. `natvox app --probe`
+measures both on your link and prints the total, because a number from your
+own connection beats any claim made here about typical latency.
+
+Where it does make sense: converting files, one-way streaming where the video
+can be delayed to match, and neural conversion later — the only part of this
+that wants a GPU, and already ~160 ms by design.
+
 ## Server
 
 ```bash
@@ -317,7 +368,7 @@ reconstructs to −322 dB. It has **not** been run against a real checkpoint.
 
 ```bash
 pip install -e '.[dev]'
-pytest                      # 393 tests
+pytest                      # 478 tests
 python tools/bench.py       # artifact measurements
 
 cd web && npm install && npm test     # 127 more, including the live path

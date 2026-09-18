@@ -33,6 +33,7 @@ import numpy as np
 
 from . import presets
 from .config import VoiceProfile
+from .dsp.util import FixedDelay as _Delay
 from .engine import VoiceChanger
 
 __all__ = [
@@ -388,38 +389,6 @@ def _convert_with_model(audio, sample_rate, voice, block_size):
 
 # ------------------------------------------------------------------ sessions
 
-class _Delay:
-    """Fixed integer delay, circular, and genuinely allocation-free.
-
-    The obvious implementation concatenates the held samples onto the block and
-    slices -- two allocations per block, on the audio thread, forever.  This
-    walks a ring instead: read the old sample out to ``out`` and write the new
-    one into its place, so no temporary is needed for the swap.  ``out`` must
-    not be ``x``, which is the only cost of doing without one.
-    """
-
-    def __init__(self, samples: int) -> None:
-        self.samples = max(0, int(samples))
-        self._buf = np.zeros(max(self.samples, 1))
-        self._pos = 0
-
-    def process(self, x: np.ndarray, out: np.ndarray) -> np.ndarray:
-        n = x.size
-        if self.samples == 0:
-            np.copyto(out[:n], x)
-            return out[:n]
-        buf, size, pos = self._buf, self.samples, self._pos
-        done = 0
-        while done < n:
-            take = min(size - pos, n - done)
-            np.copyto(out[done:done + take], buf[pos:pos + take])
-            np.copyto(buf[pos:pos + take], x[done:done + take])
-            pos = (pos + take) % size
-            done += take
-        self._pos = pos
-        return out[:n]
-
-
 class Session:
     """A live conversion whose latency does not move when the settings do.
 
@@ -568,6 +537,11 @@ class Session:
     # -- settings ----------------------------------------------------------
     def settings(self) -> dict:
         return profile_to_dict(self.voice.profile)
+
+    @property
+    def observed_pitch(self) -> tuple[float, bool]:
+        """``(hz, voiced)`` as the engine currently in use sees it."""
+        return self._engine.observed_pitch
 
     def set(self, voice: Voice | VoiceProfile | str | None = None, **changes) -> float:
         """Change the voice, cross-fading into it.  Returns the build cost in ms.

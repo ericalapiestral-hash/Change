@@ -288,6 +288,42 @@ class BiquadHighpass:
         return y
 
 
+class FixedDelay:
+    """Fixed integer delay, circular, and genuinely allocation-free.
+
+    The obvious implementation concatenates the held samples onto the block and
+    slices -- two allocations per block, on the audio thread, forever.  This
+    walks a ring instead: read the old sample out to ``out`` and write the new
+    one into its place, so no temporary is needed for the swap.  ``out`` must
+    not be ``x``, which is the only cost of doing without one.
+    """
+
+    def __init__(self, samples: int) -> None:
+        self.samples = max(0, int(samples))
+        self._buf = np.zeros(max(self.samples, 1))
+        self._pos = 0
+
+    def reset(self) -> None:
+        self._buf[:] = 0.0
+        self._pos = 0
+
+    def process(self, x: np.ndarray, out: np.ndarray) -> np.ndarray:
+        n = x.size
+        if self.samples == 0:
+            np.copyto(out[:n], x)
+            return out[:n]
+        buf, size, pos = self._buf, self.samples, self._pos
+        done = 0
+        while done < n:
+            take = min(size - pos, n - done)
+            np.copyto(out[done:done + take], buf[pos:pos + take])
+            np.copyto(buf[pos:pos + take], x[done:done + take])
+            pos = (pos + take) % size
+            done += take
+        self._pos = pos
+        return out[:n]
+
+
 class TiltFilter:
     """First-order spectral tilt: ``gain_db`` from the bottom of the band to the top.
 

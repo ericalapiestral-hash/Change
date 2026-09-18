@@ -17,6 +17,13 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .dsp.util import FixedDelay
+
+#: How long the A/B takes to cross from one path to the other.  Long enough
+#: that the switch itself is not a click, short enough that it does not blur
+#: the comparison it exists to make.
+AB_FADE_SECONDS = 0.012
+
 
 @dataclass
 class StreamStats:
@@ -64,42 +71,72 @@ class StreamProcessor:
         drift apart in pitch.
     """
 
-    def __init__(self, converter, channels: int = 1, dry_wet: float = 1.0) -> None:
+    def __init__(self, converter, channels: int = 1, dry_wet: float = 1.0,
+                 fade_seconds: float = AB_FADE_SECONDS) -> None:
         self.converter = converter
         self.sample_rate = converter.sample_rate
         self.channels = max(1, int(channels))
-        self.dry_wet = float(np.clip(dry_wet, 0.0, 1.0))
         self.stats = StreamStats()
+        # The delay line is fed on every block, not only while the original is
+        # being listened to.  Filling it on demand meant the first
+        # `latency_samples` of every A/B were the silence it had been holding
+        # -- 60 ms of nothing at the exact moment someone is trying to hear a
+        # difference, and the comparison the whole engine is judged by.
+        self._dry = FixedDelay(converter.latency_samples)
+        self._dry_out = np.zeros(4096)
+        self._mix = self._target = float(np.clip(dry_wet, 0.0, 1.0))
+        self._step = 1.0 / max(1.0, fade_seconds * self.sample_rate)
 
     @property
     def latency_ms(self) -> float:
         return 1000.0 * self.converter.latency_samples / self.sample_rate
 
+    @property
+    def dry_wet(self) -> float:
+        """1.0 is fully converted, 0.0 the delay-matched original."""
+        return self._target
+
+    @dry_wet.setter
+    def dry_wet(self, value: float) -> None:
+        self._target = float(np.clip(value, 0.0, 1.0))
+
     def __call__(self, indata: np.ndarray, frames: int) -> np.ndarray:
         """Process one device block; returns ``(frames, channels)``."""
         started = time.perf_counter()
-        mono = indata if indata.ndim == 1 else np.mean(indata, axis=1)
-        wet = self.converter.process(np.asarray(mono, dtype=np.float64))
-        if self.dry_wet < 1.0:
-            # Dry must be delayed to match, or the two copies comb-filter.
-            wet = self.dry_wet * wet + (1.0 - self.dry_wet) * self._delayed_dry(mono)
+        mono = np.asarray(indata if indata.ndim == 1 else np.mean(indata, axis=1),
+                          dtype=np.float64)
+        wet = self.converter.process(mono)
+        n = wet.size
+        if self._dry_out.size < n:
+            self._dry_out = np.zeros(n)
+        # Delayed to match, or the two copies comb-filter against each other
+        # and the original sounds worse than the processed path for reasons
+        # that have nothing to do with the processing.
+        dry = self._dry.process(mono, self._dry_out)[:n]
+        wet = self._blend(wet, dry, n)
         self.stats.record(frames, time.perf_counter() - started, self.sample_rate)
         out = wet.astype(np.float32, copy=False)
         return np.repeat(out[:, None], self.channels, axis=1)
 
-    def _delayed_dry(self, mono: np.ndarray) -> np.ndarray:
-        delay = self.converter.latency_samples
-        buf = getattr(self, "_dry_buf", None)
-        if buf is None:
-            buf = self._dry_buf = np.zeros(delay)
-        combined = np.concatenate([buf, mono])
-        self._dry_buf = combined[-delay:] if delay else np.zeros(0)
-        return combined[:mono.size]
+    def _blend(self, wet: np.ndarray, dry: np.ndarray, n: int) -> np.ndarray:
+        """Cross-fade toward the target mix.  Switching outright is a click,
+        and a click is exactly what an A/B must not add."""
+        mix, target = self._mix, self._target
+        if mix == target:
+            if target >= 1.0:
+                return wet
+            return target * wet + (1.0 - target) * dry
+        direction = 1.0 if target > mix else -1.0
+        ramp = mix + direction * self._step * np.arange(1, n + 1)
+        np.clip(ramp, min(mix, target), max(mix, target), out=ramp)
+        self._mix = float(ramp[-1])
+        return ramp * wet + (1.0 - ramp) * dry
 
     def reset(self) -> None:
         self.converter.reset()
         self.stats = StreamStats()
-        self._dry_buf = None
+        self._dry.reset()
+        self._mix = self._target
 
 
 def list_devices():

@@ -327,7 +327,21 @@ class VoiceChanger:
 
     @property
     def latency_ms(self) -> float:
-        return 1000.0 * self._latency / self.sample_rate
+        return 1000.0 * self.latency_samples / self.sample_rate
+
+    @property
+    def observed_pitch(self) -> tuple[float, bool]:
+        """``(hz, voiced)`` from the newest pitch frame; ``(0.0, False)`` if none.
+
+        Published because a meter that re-runs its own tracker over the output
+        would be measuring a different thing from the one the engine acted on,
+        and would disagree with it at exactly the moments that matter -- the
+        onsets and the creaky phrase ends where voicing is in doubt.
+        """
+        if not self._frames:
+            return 0.0, False
+        frame = self._frames[-1]
+        return (float(frame.f0), bool(frame.voiced))
 
     # ---------------------------------------------------------------- process
     def process(self, block: np.ndarray) -> np.ndarray:

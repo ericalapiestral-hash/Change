@@ -6,6 +6,7 @@
     natvox devices                          # audio hardware
     natvox live -p male_to_female           # microphone -> output
     natvox serve                            # HTTP + WebSocket API on :8420
+    natvox app                              # the desktop program
 """
 from __future__ import annotations
 
@@ -156,6 +157,26 @@ def cmd_serve(args) -> int:
     return serve_main(args.host, args.port, args.verbose)
 
 
+def cmd_app(args) -> int:
+    from .app.core import Studio
+
+    if args.check:
+        studio = Studio()
+        for block in (64, 128, 256, 512):
+            print(studio.self_test(block, seconds=args.seconds).summary())
+        return 0
+    if args.probe:
+        from .app.remote import probe
+        print(probe(args.probe).summary())
+        return 0
+    try:
+        from .app.gui import main as gui_main
+    except SystemExit as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    return gui_main([sys.argv[0]])
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="natvox", description=__doc__,
@@ -196,6 +217,15 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("-v", "--verbose", action="store_true",
                        help="log every request")
     serve.set_defaults(func=cmd_serve)
+
+    app = sub.add_parser("app", help="the desktop program")
+    app.add_argument("--check", action="store_true",
+                     help="measure whether this computer can keep up, and exit")
+    app.add_argument("--probe", metavar="WS_URL",
+                     help="measure what converting on another machine would cost")
+    app.add_argument("--seconds", type=float, default=2.0,
+                     help="how long --check measures for")
+    app.set_defaults(func=cmd_app)
     return parser
 
 

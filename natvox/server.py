@@ -32,6 +32,7 @@ import json
 import os
 import socket
 import struct
+import sys
 import threading
 import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -483,7 +484,27 @@ class Server(ThreadingHTTPServer):
 
     def __init__(self, address, verbose: bool = False) -> None:
         self.verbose = verbose
+        self.dropped = 0
         super().__init__(address, Handler)
+
+    def handle_error(self, request, client_address) -> None:
+        """A client that hung up is not a server error.
+
+        The default prints a traceback, and for a streaming endpoint the normal
+        way a session ends is the other end going away -- closing a tab, losing
+        wifi, quitting the program.  Printing a stack trace for each of those
+        trains whoever is running this to ignore the log, which is where the
+        real problem will appear.
+        """
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionError, BrokenPipeError, TimeoutError,
+                            socket.timeout)):
+            self.dropped += 1
+            if self.verbose:
+                print(f"{client_address[0]} disconnected: "
+                      f"{exc.__class__.__name__}", file=sys.stderr)
+            return
+        super().handle_error(request, client_address)
 
 
 def serve(host: str = "127.0.0.1", port: int = 8420, verbose: bool = False) -> Server:

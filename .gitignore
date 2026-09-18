@@ -17,3 +17,7 @@ out/
 # Web front end
 node_modules/
 package-lock.json
+
+# PyInstaller
+packaging/build/
+packaging/dist/
