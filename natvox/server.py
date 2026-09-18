@@ -56,6 +56,18 @@ MAX_BODY_BYTES = 256 * 1024 * 1024
 #: few hundred samples; anything near this is not audio.
 MAX_FRAME_BYTES = 16 * 1024 * 1024
 
+#: Longest audio frame a stream will convert in one go.  A block this size is
+#: already 80 times the latency the endpoint promises, so anything larger is a
+#: caller misunderstanding the protocol rather than a caller who needs it --
+#: and converting it would block the connection's thread for seconds.
+MAX_FRAME_SECONDS = 4.0
+
+#: How long a stream waits for a client that has stopped speaking before
+#: hanging up.  A muted microphone still sends blocks of silence, so a
+#: connection quiet for this long is a connection whose other end is gone, and
+#: it is holding a thread and an engine while it does it.
+IDLE_TIMEOUT_SECONDS = 300.0
+
 DEFAULT_RATE = 48000
 
 
@@ -286,7 +298,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, fmt, *args):            # quiet by default
-        if self.server.verbose:                   # type: ignore[attr-defined]
+        if getattr(self.server, "verbose", False):
             super().log_message(fmt, *args)
 
     # -- verbs
@@ -329,13 +341,20 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
+        if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
+            return self._error(
+                411, "chunked bodies are not supported; send Content-Length")
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             return self._error(400, "Content-Length must be an integer")
+        if length < 0:
+            return self._error(400, "Content-Length must not be negative")
         if length > MAX_BODY_BYTES:
             return self._error(413, f"body exceeds {MAX_BODY_BYTES} bytes")
         body = self.rfile.read(length) if length else b""
+        if len(body) < length:
+            return self._error(400, "request body ended early")
         try:
             if parsed.path == "/v1/convert":
                 return self._convert(query, body)
@@ -384,6 +403,9 @@ class Handler(BaseHTTPRequestHandler):
 
         ws = WebSocket(self.connection)
         self.close_connection = True
+        # A client that opens a stream and stops speaking otherwise holds a
+        # thread and an engine until the process ends.
+        self.connection.settimeout(IDLE_TIMEOUT_SECONDS)
         ws.send_json({
             "ready": True, "voice": session.voice.name, "rate": rate,
             "latency_ms": round(session.latency_ms, 2),
@@ -395,6 +417,15 @@ class Handler(BaseHTTPRequestHandler):
             self._pump(ws, session)
         except (WebSocketError, OSError):
             pass
+        except Exception as exc:                  # noqa: BLE001 - see below
+            # Anything unexpected from the engine belongs in the client's hands
+            # rather than in a stack trace nobody is reading: from the other
+            # end an unexplained disconnection and a bug look identical.
+            try:
+                ws.send_json({"error": f"stream failed: {exc.__class__.__name__}: {exc}"})
+            except (WebSocketError, OSError):
+                pass
+            raise
         finally:
             ws.close()
 
@@ -406,6 +437,8 @@ class Handler(BaseHTTPRequestHandler):
         force, not the ones that were asked for.  A caller that sends
         ``{"pitch_semitones": 40}`` needs to know it did not get 40.
         """
+        limit = int(MAX_FRAME_SECONDS * session.sample_rate)
+        scratch = np.zeros(1024)
         while True:
             message = ws.receive()
             if message is None:
@@ -414,10 +447,18 @@ class Handler(BaseHTTPRequestHandler):
             if opcode == WebSocket.BINARY:
                 try:
                     block = _to_float(payload)
+                    if block.size > limit:
+                        raise ParameterError(
+                            f"audio frame of {block.size} samples exceeds the "
+                            f"{limit}-sample limit ({MAX_FRAME_SECONDS:g}s); "
+                            f"send it in blocks"
+                        )
                 except ParameterError as exc:
                     ws.send_json({"error": str(exc)})
                     continue
-                ws.send_binary(_from_float(session.process(block)))
+                if scratch.size < block.size:
+                    scratch = np.zeros(block.size)
+                ws.send_binary(_from_float(session.process(block, scratch)))
             elif opcode == WebSocket.TEXT:
                 try:
                     request = json.loads(payload or b"{}")
@@ -425,7 +466,7 @@ class Handler(BaseHTTPRequestHandler):
                         raise ParameterError("a control frame must be a JSON object")
                     name = request.pop("voice", None)
                     build_ms = session.set(name, **request)
-                except (ParameterError, json.JSONDecodeError) as exc:
+                except (ParameterError, json.JSONDecodeError, TypeError) as exc:
                     ws.send_json({"error": str(exc)})
                     continue
                 ws.send_json({
@@ -458,8 +499,10 @@ def main(host: str = "127.0.0.1", port: int = 8420, verbose: bool = False) -> in
     print(f"natvox serving on http://{shown}:{server.server_address[1]}")
     print(f"  schema   http://{shown}:{server.server_address[1]}/v1/schema")
     print(f"  stream   ws://{shown}:{server.server_address[1]}/v1/stream?voice=female")
+    print("  no authentication, and any origin may call it: keep it on "
+          "loopback unless\n  you have put something in front of it")
     if host not in ("127.0.0.1", "localhost", "::1"):
-        print("  note: this port has no authentication and is not on loopback")
+        print("  WARNING: this is not a loopback address")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

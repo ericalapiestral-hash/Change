@@ -309,3 +309,117 @@ class TestWav:
         out, back = read_wav(write_wav(tone, rate))
         assert back == rate
         assert np.max(np.abs(out - tone)) < 2e-4      # 16-bit quantisation
+
+
+class TestServerRobustness:
+    def test_a_chunked_body_is_refused_with_a_reason(self, service):
+        host, port = service.split(":")
+        sock = socket.create_connection((host, int(port)), timeout=10)
+        sock.sendall(
+            f"POST /v1/convert?voice=female HTTP/1.1\r\nHost: {service}\r\n"
+            f"Transfer-Encoding: chunked\r\nContent-Type: application/octet-stream"
+            f"\r\n\r\n0\r\n\r\n".encode()
+        )
+        response = b""
+        while b"\r\n\r\n" not in response:
+            chunk = sock.recv(1024)
+            if not chunk:
+                break
+            response += chunk
+        sock.close()
+        assert b"411" in response.split(b"\r\n", 1)[0]
+
+    def test_a_body_shorter_than_it_claims_is_refused(self, service):
+        host, port = service.split(":")
+        sock = socket.create_connection((host, int(port)), timeout=10)
+        sock.sendall(
+            f"POST /v1/convert?voice=off&rate=48000 HTTP/1.1\r\nHost: {service}\r\n"
+            f"Content-Length: 4096\r\nContent-Type: application/octet-stream"
+            f"\r\n\r\n".encode() + b"\x00" * 16
+        )
+        sock.shutdown(socket.SHUT_WR)
+        response = sock.recv(4096)
+        sock.close()
+        assert b"400" in response.split(b"\r\n", 1)[0]
+
+    def test_an_oversized_audio_frame_is_refused_and_the_stream_lives(self, service):
+        from natvox.server import MAX_FRAME_SECONDS
+
+        client = WsClient(service, "/v1/stream?voice=off&rate=48000")
+        client.receive()
+        too_many = int(MAX_FRAME_SECONDS * 48000) + 1
+        client.send(0x2, np.zeros(too_many, dtype="<f4").tobytes())
+        opcode, payload = client.receive()
+        assert opcode == 0x1 and "limit" in json.loads(payload)["error"]
+        assert client.audio(np.zeros(256)).size == 256
+        client.close()
+
+    def test_a_string_false_turns_a_setting_off(self, service):
+        """A query string has no types, and bool("false") is True."""
+        client = WsClient(service, "/v1/stream?voice=female&rate=48000")
+        client.receive()
+        assert client.control({"shift_unvoiced": "false"})["settings"]["shift_unvoiced"] is False
+        assert client.control({"shift_unvoiced": "true"})["settings"]["shift_unvoiced"] is True
+        client.close()
+
+    def test_the_same_holds_in_the_query_string(self, service, sample_rate):
+        audio = (0.3 * np.sin(2 * np.pi * 140
+                              * np.arange(sample_rate // 2) / sample_rate)).astype("<f4")
+        _, body = post(
+            service,
+            f"/v1/convert?voice=female&rate={sample_rate}&shift_unvoiced=false",
+            audio.tobytes())
+        served = np.frombuffer(body, dtype="<f4").astype(np.float64)
+        expected = api.convert(
+            audio.astype(np.float64), sample_rate,
+            api.get_voice("female").profile.replace(shift_unvoiced=False))
+        assert np.max(np.abs(served - expected)) < 1e-6
+
+    def test_a_setting_at_the_top_level_of_a_posted_voice_is_400(self, service):
+        with pytest.raises(urllib.error.HTTPError) as caught:
+            post(service, "/v1/voices",
+                 json.dumps({"name": "bad", "pitch_semitones": 5}).encode(),
+                 "application/json")
+        assert caught.value.code == 400
+        assert "settings" in json.loads(caught.value.read())["error"]
+
+    def test_a_posted_voice_can_be_used_immediately(self, service, sample_rate):
+        body = json.dumps({
+            "name": "test_posted",
+            "summary": "made over the wire",
+            "settings": {"pitch_semitones": 3.0, "formant_semitones": 1.0,
+                         "shift_unvoiced": "yes"},
+        }).encode()
+        status, _ = post(service, "/v1/voices", body, "application/json")
+        assert status == 201
+        _, listed = get(service, "/v1/voices")
+        posted = next(v for v in listed["voices"] if v["name"] == "test_posted")
+        assert posted["settings"]["shift_unvoiced"] is True
+        client = WsClient(service, f"/v1/stream?voice=test_posted&rate={sample_rate}")
+        ready = json.loads(client.receive()[1])
+        assert ready["voice"] == "test_posted"
+        client.close()
+
+    def test_a_stream_survives_a_client_that_sends_nothing_but_pings(self, service):
+        client = WsClient(service, "/v1/stream?voice=off")
+        client.receive()
+        for _ in range(5):
+            client.send(0x9, b"")
+            assert client.receive()[0] == 0xA
+        assert client.audio(np.zeros(128)).size == 128
+        client.close()
+
+    def test_two_streams_do_not_interfere(self, service, sample_rate):
+        first = WsClient(service, f"/v1/stream?voice=female&rate={sample_rate}")
+        second = WsClient(service, f"/v1/stream?voice=off&rate={sample_rate}")
+        first.receive(); second.receive()
+        rng = np.random.default_rng(21)
+        blocks = [rng.normal(0, 0.1, 512) for _ in range(10)]
+        interleaved = [first.audio(b) for b in blocks]
+        second_out = [second.audio(b) for b in blocks]
+        first.close(); second.close()
+
+        alone = api.Session(sample_rate, "female")
+        assert np.max(np.abs(np.concatenate(interleaved)
+                             - np.concatenate([alone.process(b) for b in blocks]))) < 1e-6
+        assert np.all(np.isfinite(np.concatenate(second_out)))

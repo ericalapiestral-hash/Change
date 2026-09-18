@@ -224,3 +224,177 @@ class TestConvert:
     def test_it_keeps_the_shape(self, sample_rate):
         stereo = np.random.default_rng(2).normal(0, 0.1, (sample_rate, 2))
         assert api.convert(stereo, sample_rate, "female_soft").shape == stereo.shape
+
+
+class TestBudgetReasoning:
+    def test_two_corners_really_do_bound_the_whole_range(self, sample_rate):
+        """The session builds two engines rather than nine, on the argument
+        that the worst case is always at the lowest pitch and at one formant
+        extreme or the other.  That argument is not self-evidently right, so it
+        is checked against a grid rather than trusted."""
+        from natvox import VoiceChanger
+
+        session = Session(sample_rate, "female", adjust=(6.0, 4.0), f0_floor=65.0)
+        base = api.get_voice("female").profile
+        for dp in np.linspace(-6.0, 6.0, 5):
+            for df in np.linspace(-4.0, 4.0, 5):
+                candidate = base.replace(
+                    pitch_semitones=base.pitch_semitones + float(dp),
+                    formant_semitones=base.formant_semitones + float(df),
+                    f0_min=65.0,
+                )
+                latency = VoiceChanger(sample_rate, candidate).latency_samples
+                assert latency <= session.latency_samples, (
+                    f"pitch{dp:+.1f} formant{df:+.1f} needs {latency} against "
+                    f"a budget of {session.latency_samples}")
+
+
+class TestLatencyFlags:
+    @pytest.mark.parametrize("parameter", api.PARAMETERS, ids=lambda p: p.name)
+    def test_the_table_says_what_the_engine_does(self, sample_rate, parameter):
+        """Rebuild the engine at each extreme and see whether the delay moved.
+
+        The table was wrong in four places when this was written -- pitch,
+        formants and intonation were marked free and are not, and f0_max was
+        marked costly and is not.  Whether a setting moves the delay is not
+        something anyone can read off the engine by looking at it, and the
+        table is published to callers who will plan around it.
+        """
+        from natvox import VoiceChanger
+
+        base = VoiceProfile()
+        values = ([False, True] if parameter.unit == "bool"
+                  else [parameter.minimum, parameter.default, parameter.maximum])
+        seen = set()
+        for value in values:
+            try:
+                profile = base.replace(**{parameter.name: value})
+            except ValueError:
+                continue                      # excluded by a cross-field rule
+            seen.add(VoiceChanger(sample_rate, profile).latency_samples)
+        assert parameter.changes_latency == (len(seen) > 1), (
+            f"{parameter.name}: latency across its range was {sorted(seen)}")
+
+    def test_the_live_list_is_the_other_half_of_the_table(self):
+        assert set(api.LIVE_PARAMETERS) == {
+            p.name for p in api.PARAMETERS if not p.changes_latency}
+
+
+class TestBooleans:
+    @pytest.mark.parametrize("value,expected", [
+        (True, True), (False, False), (1, True), (0, False),
+        ("true", True), ("TRUE", True), ("yes", True), ("on", True), ("1", True),
+        ("false", False), ("False", False), ("no", False), ("off", False),
+        ("0", False), ("", False),
+    ])
+    def test_the_spellings_a_query_string_and_hand_written_json_produce(
+            self, value, expected):
+        """``bool("false")`` is ``True``.  A setting turned on while the
+        request that turned it off is acknowledged is the worst kind of bug:
+        the caller has written evidence that it asked for the opposite."""
+        profile = api.profile_from_dict({"shift_unvoiced": value})
+        assert profile.shift_unvoiced is expected
+
+    @pytest.mark.parametrize("value", ["maybe", "2", None, [], 7])
+    def test_anything_else_is_refused(self, value):
+        with pytest.raises(ParameterError, match="true or false"):
+            api.profile_from_dict({"shift_unvoiced": value})
+
+    def test_a_boolean_is_not_a_number(self):
+        """``float(True)`` is 1.0, so this would otherwise be one semitone."""
+        with pytest.raises(ParameterError, match="not a boolean"):
+            api.profile_from_dict({"pitch_semitones": True})
+
+
+class TestVoiceParsing:
+    def test_a_setting_at_the_top_level_is_an_error_not_a_shrug(self):
+        with pytest.raises(ParameterError, match="under"):
+            Voice.from_dict({"name": "x", "pitch_semitones": 5})
+
+    def test_what_as_dict_emits_can_be_read_back(self):
+        for voice in api.voices():
+            assert Voice.from_dict(voice.as_dict()).profile == voice.profile
+
+    @pytest.mark.parametrize("data", [
+        {}, {"name": ""}, {"name": "  "}, {"name": "x", "settings": []}, [],
+    ])
+    def test_nonsense_is_refused(self, data):
+        with pytest.raises(ParameterError):
+            Voice.from_dict(data)
+
+
+class TestSessionRobustness:
+    @pytest.mark.parametrize("kwargs", [
+        {"sample_rate": 0}, {"sample_rate": -48000}, {"sample_rate": 10 ** 9},
+        {"adjust": (float("nan"), 1.0)}, {"adjust": (99.0, 1.0)}, {"adjust": 3},
+        {"f0_floor": 5.0}, {"f0_floor": 4000.0},
+        {"crossfade_ms": 0.0}, {"crossfade_ms": float("inf")},
+    ])
+    def test_impossible_construction_is_refused(self, sample_rate, kwargs):
+        args = {"sample_rate": sample_rate, "voice": "female", **kwargs}
+        with pytest.raises(ParameterError):
+            Session(**args)
+
+    def test_out_avoids_the_one_allocation_a_return_value_needs(self, sample_rate):
+        session = Session(sample_rate, "female")
+        block = np.random.default_rng(0).normal(0, 0.1, 256)
+        scratch = np.empty(256)
+        result = session.process(block, scratch)
+        assert result.base is scratch or result is scratch
+        fresh = Session(sample_rate, "female").process(block)
+        assert np.array_equal(result, fresh)
+
+    def test_a_short_out_is_refused_rather_than_silently_truncating(self, sample_rate):
+        session = Session(sample_rate, "female")
+        with pytest.raises(ParameterError, match="need 256"):
+            session.process(np.zeros(256), np.empty(64))
+
+    def test_a_larger_out_is_used_up_to_the_block_length(self, sample_rate):
+        session = Session(sample_rate, "female")
+        big = np.full(1024, 7.0)
+        result = session.process(np.zeros(256), big)
+        assert result.size == 256
+        assert big[256] == 7.0            # nothing written past the block
+
+    def test_changing_the_voice_from_another_thread_loses_nothing(self, sample_rate):
+        """The audio thread clears the pending slot; a set() landing between
+        its read and its clear would otherwise vanish, and the caller was told
+        the change was in force."""
+        import threading
+
+        session = Session(sample_rate, "female_soft")
+        stop = threading.Event()
+        failures = []
+
+        def audio():
+            block = np.zeros(128)
+            scratch = np.empty(128)
+            while not stop.is_set():
+                try:
+                    session.process(block, scratch)
+                except Exception as exc:               # noqa: BLE001
+                    failures.append(exc)
+                    return
+
+        worker = threading.Thread(target=audio, daemon=True)
+        worker.start()
+        try:
+            for value in np.linspace(1.0, 8.0, 40):
+                session.set(pitch_semitones=float(value))
+        finally:
+            stop.set()
+            worker.join(timeout=5)
+        assert not failures, failures
+        assert session.settings()["pitch_semitones"] == pytest.approx(8.0)
+        # And the setting that was last asked for is the one that ends up audible.
+        for _ in range(400):
+            session.process(np.zeros(128))
+        assert session._pending is None
+
+    def test_reset_drops_a_voice_change_that_had_not_landed(self, sample_rate):
+        session = Session(sample_rate, "female_soft")
+        session.set(pitch_semitones=7.0)
+        session.reset()
+        assert session._pending is None
+        out = np.concatenate([session.process(np.zeros(512)) for _ in range(20)])
+        assert np.max(np.abs(out)) == 0.0
