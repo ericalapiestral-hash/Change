@@ -8,7 +8,10 @@ build/
 .pytest_cache/
 .ruff_cache/
 *.wav
+# Test fixtures are inputs, not output: the fake microphone's audio and any
+# reference recordings have to travel with the tests that read them.
 !tests/data/*.wav
+!web/test/fixtures/*.wav
 out/
 
 # Web front end
