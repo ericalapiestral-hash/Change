@@ -75,6 +75,11 @@ export class RingBuffer {
  * every overlap, which on a fricative is an amplitude modulation at the grain
  * rate - an audible buzz. They are accumulated separately, normalised by the
  * root of the summed squared window, and blended by coverage.
+ *
+ * A third window total tracks the coverage that came from *voiced* grains, so
+ * that anything downstream wanting to treat vowels differently from consonants
+ * has a per-sample answer without running a second detector over the output.
+ * The grains already know; their windows are the natural weighting.
  */
 export class OverlapAccumulator {
   constructor(capacity) {
@@ -84,17 +89,19 @@ export class OverlapAccumulator {
     this.sigI = new Float64Array(capacity);
     this.winI = new Float64Array(capacity);
     this.powI = new Float64Array(capacity);
+    this.winV = new Float64Array(capacity);
     this.origin = 0;
   }
 
   reset() {
     this.sig.fill(0); this.win.fill(0);
     this.sigI.fill(0); this.winI.fill(0); this.powI.fill(0);
+    this.winV.fill(0);
     this.origin = 0;
   }
 
   /** Add a windowed grain of `n` samples starting at absolute index `start`. */
-  add(start, grain, window, n, coherent) {
+  add(start, grain, window, n, coherent, voiced = false) {
     const { capacity, origin } = this;
     for (let i = 0; i < n; i++) {
       const abs = start + i;
@@ -109,6 +116,7 @@ export class OverlapAccumulator {
         this.winI[slot] += w;
         this.powI[slot] += w * w;
       }
+      if (voiced) this.winV[slot] += w;
     }
   }
 
@@ -120,7 +128,7 @@ export class OverlapAccumulator {
    * covers a sample; there the output fades instead, which is inaudible and
    * never rings.
    */
-  readAndClear(start, stop, out, normFloor = 0.30, slack = 0) {
+  readAndClear(start, stop, out, normFloor = 0.30, slack = 0, voicedOut = null) {
     const { capacity } = this;
     const n = stop - start;
     for (let i = 0; i < n; i++) {
@@ -137,6 +145,13 @@ export class OverlapAccumulator {
         value = (coherent + incoherent) / denom;
       }
       out[i] = value;
+      if (voicedOut) {
+        // Read in the same pass as the audio, because the pass below clears
+        // the slots: a second read would find them empty for anything inside
+        // the slack window and silently report unvoiced.
+        const share = total > 1e-12 ? this.winV[slot] / total : 0;
+        voicedOut[i] = share < 0 ? 0 : share > 1 ? 1 : share;
+      }
     }
     // Clearing is deferred by `slack` samples. A voiced onset lengthens grains
     // abruptly, so one grain per utterance lands just behind the read cursor;
@@ -148,6 +163,7 @@ export class OverlapAccumulator {
       const slot = ((abs % capacity) + capacity) % capacity;
       this.sig[slot] = 0; this.win[slot] = 0;
       this.sigI[slot] = 0; this.winI[slot] = 0; this.powI[slot] = 0;
+      this.winV[slot] = 0;
     }
     this.origin = Math.max(0, stop - slack);
     return n;

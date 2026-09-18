@@ -20,7 +20,7 @@
  * thread invites a garbage-collection pause at exactly the moment there is no
  * time for one.
  */
-import { Biquad, BiquadChain, OnePole, butterworthHighpass, butterworthLowpass } from './biquad.js';
+import { Biquad, BiquadChain, OnePole, TiltFilter, butterworthHighpass, butterworthLowpass } from './biquad.js';
 import { OverlapAccumulator, RingBuffer } from './buffers.js';
 import { YinF0Tracker } from './f0.js';
 import { EpochTracker } from './epochs.js';
@@ -84,6 +84,25 @@ export const TRANSIENT_CREST = 2.8;
 /** Averaging window for the short-term term above (0.5 ms). */
 export const TRANSIENT_WINDOW_SECONDS = 0.0005;
 
+/**
+ * Time constant of the running pitch average that intonation expansion works
+ * against. Above phrase length and below register, which is the band where the
+ * gender difference in F0 range is actually measured. The setting is a gain on
+ * the deviation from this average, so this decides how much of the contour
+ * counts as deviation at all.
+ */
+export const INTONATION_TC = 1.5;
+
+/** How far expansion may move the pitch ratio from its nominal value. */
+export const INTONATION_LIMIT_ST = 4;
+
+/**
+ * Aspiration noise level at breathiness 1.0, relative to the local envelope of
+ * the signal *within the aspiration band*. Larger than it looks: the band holds
+ * a small fraction of a vowel's energy.
+ */
+export const ASPIRATION_DEPTH = 4;
+
 const MARK_CAPACITY = 1024;
 const FRAME_CAPACITY = 256;
 
@@ -94,6 +113,13 @@ export const DEFAULT_PROFILE = {
   f0Max: 500,
   shiftUnvoiced: false,
   breathiness: 0,
+  // Scale on the speaker's pitch range, separately from its centre. Set at
+  // construction rather than live because it widens the range of pitch ratios
+  // the engine may use, and the latency budget is sized from that range.
+  intonation: 1,
+  // Spectral tilt low to high in dB, pivoting at 1 kHz. Live: it is a filter,
+  // not geometry, so it costs the budget nothing.
+  tiltDb: 0,
   outputGainDb: 0,
   // How far ahead of a mark pitch tracking may be consulted when deciding
   // whether that mark is voiced. Pitch tracking cannot call a frame voiced
@@ -144,7 +170,14 @@ export class VoiceChanger {
     this.centre = { pitchSemitones: p.pitchSemitones, formantSemitones: p.formantSemitones };
     this.pitchRatio = semitonesToRatio(p.pitchSemitones);
     this.formantRatio = semitonesToRatio(p.formantSemitones);
-    this.isIdentity = p.pitchSemitones === 0 && p.formantSemitones === 0 && p.breathiness <= 0;
+    this.intonation = p.intonation;
+    // Expansion moves the ratio per glottal pulse, so anything sized from the
+    // ratio is sized from the end of its range that asks for the most. Longer
+    // grains come from the lower end, which is what the budget below uses.
+    this.intonationSpan = Math.abs(p.intonation - 1) > 1e-9 ? INTONATION_LIMIT_ST : 0;
+    this.ratioLo = this.pitchRatio * Math.pow(2, -this.intonationSpan / 12);
+    this.ratioHi = this.pitchRatio * Math.pow(2, this.intonationSpan / 12);
+    this.isIdentity = this._identity(p.pitchSemitones, p.formantSemitones);
 
     this.f0 = new YinF0Tracker(sampleRate, { f0Min: p.f0Min, f0Max: p.f0Max });
     this.epochs = new EpochTracker(0.30, this.f0.tauMax + 4);
@@ -164,7 +197,7 @@ export class VoiceChanger {
     // lowest formants.
     const widestScale = grainHalfLength(
       longestPeriod,
-      semitonesToRatio(p.pitchSemitones - this.range.pitchSt),
+      semitonesToRatio(p.pitchSemitones - this.range.pitchSt - this.intonationSpan),
       semitonesToRatio(p.formantSemitones + this.range.formantSt),
     );
     this.maxHalf = Math.max(widestScale, Math.round(this.unvoicedHop * (1 + UNVOICED_JITTER)));
@@ -224,6 +257,7 @@ export class VoiceChanger {
     this.markPeriod = new Float64Array(MARK_CAPACITY);
     this.markVoiced = new Uint8Array(MARK_CAPACITY);
     this.markDeviation = new Float64Array(MARK_CAPACITY);
+    this.markRatio = new Float64Array(MARK_CAPACITY);
     this.framePos = new Float64Array(FRAME_CAPACITY);
     this.framePeriod = new Float64Array(FRAME_CAPACITY);
     this.frameVoiced = new Uint8Array(FRAME_CAPACITY);
@@ -236,9 +270,18 @@ export class VoiceChanger {
       new Biquad(butterworthHighpass(sampleRate, Math.min(1500, sampleRate * 0.45))),
       new Biquad(butterworthLowpass(sampleRate, Math.min(7000, sampleRate * 0.475))),
     ]);
+    // A second copy of the same band, used to measure the signal's energy
+    // where the noise is about to go; see _addAspiration.
+    this.breathKey = new BiquadChain([
+      new Biquad(butterworthHighpass(sampleRate, Math.min(1500, sampleRate * 0.45))),
+      new Biquad(butterworthLowpass(sampleRate, Math.min(7000, sampleRate * 0.475))),
+    ]);
     this.breathEnv = new OnePole(sampleRate, 0.010);
+    this.tilt = new TiltFilter(sampleRate, p.tiltDb);
     this.noiseScratch = new Float64Array(4096);
     this.envScratch = new Float64Array(4096);
+    this.keyScratch = new Float64Array(4096);
+    this.voicedScratch = new Float64Array(4096);
 
     this.scratchIn = new Float64Array(4096);
     this.scratchWet = new Float64Array(4096);
@@ -275,7 +318,13 @@ export class VoiceChanger {
       this.formantRatio = nextFormant;
       this.resampler.retune(nextFormant);
     }
-    this.isIdentity = pitch === 0 && formant === 0 && this.profile.breathiness <= 0;
+    this.isIdentity = this._identity(pitch, formant);
+  }
+
+  _identity(pitch, formant) {
+    return pitch === 0 && formant === 0 && this.profile.breathiness <= 0
+      && Math.abs(this.profile.intonation - 1) < 1e-9
+      && Math.abs(this.profile.tiltDb) < 1e-9;
   }
 
   /** Live settings that need no geometry change at all. */
@@ -284,13 +333,20 @@ export class VoiceChanger {
     if (opts.breathiness !== undefined) {
       this.profile.breathiness = Math.min(1, Math.max(0, opts.breathiness));
     }
+    if (opts.tiltDb !== undefined && opts.tiltDb !== this.profile.tiltDb) {
+      this.profile.tiltDb = opts.tiltDb;
+      const state = this.tilt.z;
+      this.tilt = new TiltFilter(this.sampleRate, opts.tiltDb);
+      // Carry the state across: a first-order filter's state is one sample of
+      // history, so retuning around it is continuous rather than a step.
+      this.tilt.z = this.tilt.enabled ? state : 0;
+    }
     if (opts.outputGainDb !== undefined) {
       this.profile.outputGainDb = opts.outputGainDb;
       this.gain = Math.pow(10, opts.outputGainDb / 20);
     }
-    this.isIdentity = this.profile.pitchSemitones === 0
-      && this.profile.formantSemitones === 0
-      && this.profile.breathiness <= 0;
+    this.isIdentity = this._identity(this.profile.pitchSemitones,
+                                     this.profile.formantSemitones);
   }
 
   reset() {
@@ -301,6 +357,11 @@ export class VoiceChanger {
     this.epochs.reset();
     if (this.highpass) this.highpass.reset();
     this.breath.reset();
+    this.breathKey.reset();
+    this.tilt.reset();
+    // null until the first voiced mark, so expansion starts from the speaker's
+    // actual pitch rather than sliding down from a guess.
+    this.logPeriodMean = null;
     this.envIn.set(0); this.envOut.set(0); this.gainSmooth.set(1);
     this.breathEnv.set(0);
     this.jitterRng = new Prng(0x5eed);
@@ -326,6 +387,8 @@ export class VoiceChanger {
     this.scratchDry = new Float64Array(size);
     this.noiseScratch = new Float64Array(size);
     this.envScratch = new Float64Array(size);
+    this.keyScratch = new Float64Array(size);
+    this.voicedScratch = new Float64Array(size);
   }
 
   /**
@@ -390,9 +453,14 @@ export class VoiceChanger {
       // The accumulator still has to be drained or it would run out of ring.
       this.acc.readAndClear(this.outPos, this.outPos + n, this.envScratch, 0.30, this.accRetention);
     } else {
-      this.acc.readAndClear(this.outPos, this.outPos + n, wet, 0.30, this.accRetention);
+      const breathy = this.profile.breathiness > 0;
+      this.acc.readAndClear(this.outPos, this.outPos + n, wet, 0.30, this.accRetention,
+        breathy ? this.voicedScratch : null);
+      // Tilt before the loudness match, so the match cancels whatever
+      // broadband level the slope implies and leaves only its colour.
+      this.tilt.process(wet, n);
       this._matchLoudness(dry, wet, n);
-      if (this.profile.breathiness > 0) this._addBreath(wet, n);
+      if (breathy) this._addAspiration(wet, n);
     }
 
     const g = this.gain;
@@ -459,11 +527,29 @@ export class VoiceChanger {
         if (ahead >= 0) { idx = ahead; slot = idx % FRAME_CAPACITY; }
       }
       const voiced = this.frameVoiced[slot] === 1;
-      let mark, period, deviation = 0;
+      let mark, period, deviation = 0, ratio = this.pitchRatio;
+      // Computed, not committed: this loop may still decline to create the
+      // mark, and the running average must advance once per mark that exists
+      // rather than once per attempt - attempts depend on how much audio has
+      // arrived, and nothing in the output may depend on that.
+      let pendingMean = this.logPeriodMean;
 
       if (voiced) {
         period = Math.min(Math.max(this.framePeriod[slot], f0.tauMin), f0.tauMax);
-        const half = grainHalfLength(period, this.pitchRatio, this.formantRatio);
+        if (this.intonation !== 1) {
+          const logPeriod = Math.log(period);
+          const mean = this.logPeriodMean === null ? logPeriod : this.logPeriodMean;
+          // One-pole in the mark domain: a mark covers one period of time, so
+          // the coefficient comes from that period rather than a fixed hop.
+          const a = Math.exp(-period / (INTONATION_TC * this.sampleRate));
+          pendingMean = a * mean + (1 - a) * logPeriod;
+          const deviationSt = (12 * (mean - logPeriod)) / Math.LN2;
+          const extra = clamp((this.intonation - 1) * deviationSt,
+            -INTONATION_LIMIT_ST, INTONATION_LIMIT_ST);
+          ratio = clamp(this.pitchRatio * Math.pow(2, extra / 12),
+            this.ratioLo, this.ratioHi);
+        }
+        const half = grainHalfLength(period, ratio, this.formantRatio);
         // Phase-locking may place the mark up to searchFraction of a period
         // *later* than predicted, and the grain then needs a half-length
         // beyond that. Budgeting only to the predicted position leaves the
@@ -492,6 +578,8 @@ export class VoiceChanger {
       this.markPeriod[mslot] = period;
       this.markVoiced[mslot] = voiced ? 1 : 0;
       this.markDeviation[mslot] = deviation;
+      this.markRatio[mslot] = ratio;
+      this.logPeriodMean = pendingMean;
       this.markEnd++;
       if (this.markEnd - this.markStart > MARK_CAPACITY) this.markStart = this.markEnd - MARK_CAPACITY;
       this.lastMark = mark;
@@ -526,7 +614,7 @@ export class VoiceChanger {
     if (this.synthPos === null) this.synthPos = this.markPos[this.markStart % MARK_CAPACITY];
 
     const limit = this.markPos[(this.markEnd - 1) % MARK_CAPACITY];
-    const alpha = this.formantRatio, ratio = this.pitchRatio;
+    const alpha = this.formantRatio;
     const shiftUnvoiced = this.profile.shiftUnvoiced;
 
     while (this.synthPos <= limit) {
@@ -536,6 +624,7 @@ export class VoiceChanger {
       const markPos = this.markPos[slot];
       const markPeriod = this.markPeriod[slot];
       const voiced = this.markVoiced[slot] === 1;
+      const ratio = voiced ? this.markRatio[slot] : this.pitchRatio;
 
       // Put the grain where the speaker's own glottal pulse was, not where a
       // smoothed pitch estimate says it should have been. Divided by the pitch
@@ -597,7 +686,7 @@ export class VoiceChanger {
         synthWin = this.synthWindows.hann(outLen);
       }
 
-      this.acc.add(base - (outLen >> 1), grain, synthWin, outLen, coherent);
+      this.acc.add(base - (outLen >> 1), grain, synthWin, outLen, coherent, voiced);
 
       if (voiced) {
         this.synthPos += markPeriod / ratio;
@@ -667,20 +756,38 @@ export class VoiceChanger {
   }
 
   /**
-   * Mix in a little aspiration noise. A large upward pitch shift spreads the
-   * harmonics apart and thins the spectrum out; real voices fill that region
-   * with breath. The noise is band-limited to where aspiration actually lives
-   * so it reads as breath rather than hiss, and gated by the signal's own
-   * envelope so silence stays silent.
+   * Mix a little aspiration noise into the voiced audio.
+   *
+   * A large upward pitch shift spreads the harmonics apart and thins the
+   * spectrum out; real voices fill that region with breath. The noise is
+   * band-limited to where aspiration actually lives so it reads as breath
+   * rather than hiss, and gated by the signal's own envelope so silence stays
+   * silent.
+   *
+   * It is also gated by how voiced each sample is. Aspiration is noise leaking
+   * through a glottis that is not closing completely: it happens during
+   * phonation and nowhere else, and adding it to a fricative is noise on noise,
+   * which sounds only noisier. The weight comes from the overlap-add windows
+   * themselves, so the gate follows the same grains the audio did.
+   *
+   * The level is keyed off the signal *in the same band as the noise*, because
+   * real aspiration is filtered by the same tract as the voice and so is loud
+   * on a bright vowel and quiet on a dark one. Broadband keying puts a constant
+   * hiss over every vowel, including the ones with nothing up there.
    */
-  _addBreath(wet, n) {
+  _addAspiration(wet, n) {
     const amount = this.profile.breathiness;
-    const noise = this.noiseScratch, env = this.envScratch;
+    const noise = this.noiseScratch, env = this.envScratch, key = this.keyScratch;
+    const voiced = this.voicedScratch;
     this.noiseRng.fill(noise, n);
     this.breath.process(noise, n);
-    for (let i = 0; i < n; i++) env[i] = Math.abs(wet[i]);
+    for (let i = 0; i < n; i++) key[i] = wet[i];
+    this.breathKey.process(key, n);
+    for (let i = 0; i < n; i++) env[i] = Math.abs(key[i]);
     this.breathEnv.process(env, n);
-    for (let i = 0; i < n; i++) wet[i] += noise[i] * env[i] * amount * 0.5;
+    for (let i = 0; i < n; i++) {
+      wet[i] += noise[i] * env[i] * voiced[i] * amount * ASPIRATION_DEPTH;
+    }
   }
 
   /** Release buffers and ring entries that nothing can reach back to. */

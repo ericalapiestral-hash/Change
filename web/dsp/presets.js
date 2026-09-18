@@ -10,9 +10,30 @@
  */
 export const PRESETS = {
   off: { pitchSemitones: 0, formantSemitones: 0 },
+  // 0.02 rather than the 0.03 this carried before aspiration was keyed off
+  // the signal's energy in the aspiration band instead of its broadband level.
   male_to_female: {
     pitchSemitones: 7, formantSemitones: 2.6, f0Min: 70, f0Max: 400,
-    shiftUnvoiced: true, breathiness: 0.03,
+    shiftUnvoiced: true, breathiness: 0.02,
+  },
+  // The presets above move pitch and vocal-tract size and nothing else, which
+  // is the transparent thing to do and also why they still sound like a man an
+  // octave up: the ear uses more cues than two. The three below add the rest of
+  // what the literature measures between male and female speech - F0 range
+  // (~2.0-2.8 st of standard deviation for men against ~2.4-3.4 for women), a
+  // few dB of spectral slope beyond what tract scaling explains, and audibly
+  // breathier phonation. None of them changes whose voice it is.
+  female: {
+    pitchSemitones: 7, formantSemitones: 2.6, f0Min: 70, f0Max: 400,
+    shiftUnvoiced: true, breathiness: 0.12, intonation: 1.22, tiltDb: 2,
+  },
+  female_soft: {
+    pitchSemitones: 4.5, formantSemitones: 1.8, f0Min: 70, f0Max: 400,
+    breathiness: 0.08, intonation: 1.15, tiltDb: 1.2,
+  },
+  female_bright: {
+    pitchSemitones: 7.5, formantSemitones: 3.2, f0Min: 70, f0Max: 420,
+    shiftUnvoiced: true, breathiness: 0.16, intonation: 1.28, tiltDb: 3.5,
   },
   female_to_male: {
     pitchSemitones: -7, formantSemitones: -2.6, f0Min: 110, f0Max: 500,

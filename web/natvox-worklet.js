@@ -13,7 +13,7 @@
  *                                      `spec` carries a resampling kernel built
  *                                      on the main thread when the formant
  *                                      ratio changed
- *   {type:'options', ...}               consonant shifting, breath, output gain
+ *   {type:'options', ...}               consonants, breath, tilt, output gain
  *   {type:'bypass',  on}                A/B against the delay-matched dry signal
  *   {type:'capture'}                    hand back the last few seconds of input
  *   {type:'reset'}

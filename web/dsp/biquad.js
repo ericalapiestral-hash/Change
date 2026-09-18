@@ -102,3 +102,50 @@ export class OnePole {
     this.state = s;
   }
 }
+
+/**
+ * First-order spectral tilt: `gainDb` from the bottom of the band to the top.
+ *
+ * The asymptotes are -gainDb/2 low down and +gainDb/2 up top, crossing at
+ * `pivotHz`; as with any first-order shelf the response at the crossing sits a
+ * little above it (+0.96 dB for a 6 dB tilt).
+ *
+ * From the bilinear transform of H(s) = (gh*s + gl*w0) / (s + w0), prewarped so
+ * the pivot lands exactly on `pivotHz`. Run in transposed direct form II, which
+ * is what scipy.signal.lfilter does, so this agrees with the Python
+ * implementation sample for sample rather than merely closely.
+ */
+export class TiltFilter {
+  constructor(sampleRate, gainDb, pivotHz = 1000) {
+    this.enabled = Math.abs(gainDb) > 1e-6;
+    this.z = 0;
+    if (!this.enabled) return;
+    const nyquist = sampleRate * 0.5;
+    const pivot = Math.min(Math.max(pivotHz, 20), nyquist * 0.9);
+    const high = Math.pow(10, gainDb / 40);
+    const low = 1 / high;
+    const k = Math.tan((Math.PI * pivot) / sampleRate);
+    const norm = 1 + k;
+    this.b0 = (high + low * k) / norm;
+    this.b1 = (low * k - high) / norm;
+    this.a1 = (k - 1) / norm;
+  }
+
+  reset() { this.z = 0; }
+
+  process(buf, n, out = buf) {
+    if (!this.enabled) {
+      if (out !== buf) for (let i = 0; i < n; i++) out[i] = buf[i];
+      return;
+    }
+    const { b0, b1, a1 } = this;
+    let z = this.z;
+    for (let i = 0; i < n; i++) {
+      const x = buf[i];
+      const y = b0 * x + z;
+      z = b1 * x - a1 * y;
+      out[i] = y;
+    }
+    this.z = z;
+  }
+}

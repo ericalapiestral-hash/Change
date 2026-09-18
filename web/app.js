@@ -21,6 +21,8 @@ const ui = {
   power: el('power'), lang: el('lang'), banner: el('banner'), error: el('error'),
   preset: el('preset'), pitch: el('pitch'), formant: el('formant'),
   breath: el('breath'), gain: el('gain'), shiftUnvoiced: el('shiftUnvoiced'),
+  tilt: el('tilt'), tiltOut: el('tiltOut'),
+  intonation: el('intonation'), intonationOut: el('intonationOut'),
   pitchOut: el('pitchOut'), formantOut: el('formantOut'),
   breathOut: el('breathOut'), gainOut: el('gainOut'), warnings: el('warnings'),
   meterIn: el('meterIn'), meterOut: el('meterOut'),
@@ -79,6 +81,8 @@ function readProfile() {
     pitchSemitones: Number(ui.pitch.value),
     formantSemitones: Number(ui.formant.value),
     breathiness: Number(ui.breath.value),
+    tiltDb: Number(ui.tilt.value),
+    intonation: Number(ui.intonation.value),
     outputGainDb: Number(ui.gain.value),
     shiftUnvoiced: ui.shiftUnvoiced.checked,
     f0Min: Number(ui.f0min.value),
@@ -91,6 +95,8 @@ function refreshReadouts() {
   ui.pitchOut.textContent = `${Number(ui.pitch.value).toFixed(1)} st`;
   ui.formantOut.textContent = `${Number(ui.formant.value).toFixed(1)} st`;
   ui.breathOut.textContent = Number(ui.breath.value).toFixed(2);
+  ui.tiltOut.textContent = `${Number(ui.tilt.value).toFixed(1)} dB`;
+  ui.intonationOut.textContent = `${Number(ui.intonation.value).toFixed(2)}x`;
   ui.gainOut.textContent = `${Number(ui.gain.value).toFixed(1)} dB`;
   ui.f0minOut.textContent = `${ui.f0min.value} Hz`;
   ui.f0maxOut.textContent = `${ui.f0max.value} Hz`;
@@ -156,6 +162,7 @@ function pushShift() {
     type: 'options',
     shiftUnvoiced: profile.shiftUnvoiced,
     breathiness: profile.breathiness,
+    tiltDb: profile.tiltDb,
     outputGainDb: profile.outputGainDb,
   });
 }
@@ -165,6 +172,8 @@ async function applyPreset(name) {
   ui.pitch.value = preset.pitchSemitones;
   ui.formant.value = preset.formantSemitones;
   ui.breath.value = preset.breathiness;
+  ui.tilt.value = preset.tiltDb;
+  ui.intonation.value = preset.intonation;
   ui.gain.value = preset.outputGainDb;
   ui.shiftUnvoiced.checked = preset.shiftUnvoiced;
   // A preset generally moves further than the live band allows, and it may
@@ -281,6 +290,7 @@ function refreshRangeAdvice() {
 /* ------------------------------------------------------------ audio graph */
 
 function showError(message) {
+  emit('error', message);
   ui.error.textContent = message;
   ui.error.hidden = false;
 }
@@ -371,6 +381,7 @@ function onWorkletMessage(msg) {
   }
   if (msg.type !== 'metrics') return;
   state.metrics = msg;
+  emit('metrics', msg);
 
   paintMeter(ui.meterIn, ui.meterInText, msg.peakIn);
   paintMeter(ui.meterOut, ui.meterOutText, msg.peakOut);
@@ -548,6 +559,105 @@ function snapshot() {
 
 window.natvoxTest = { renderOffline, benchmark, snapshot, VoiceChanger, PRESETS, state };
 
+/* ------------------------------------------------------------- public API */
+
+/**
+ * `window.natvox` is the surface this page is built on, exposed so the same
+ * engine can be driven from other code on the page - a game, a meeting client,
+ * another UI - without going through the controls.
+ *
+ * It mirrors natvox.api on the Python side deliberately: the same voice names,
+ * the same setting names in camelCase, the same rule that a setting changing
+ * the latency budget takes effect by rebuilding. Two front ends that describe
+ * the same engine differently are two chances to be wrong about it.
+ */
+const listeners = { metrics: new Set(), error: new Set() };
+
+function emit(event, payload) {
+  for (const fn of listeners[event] || []) {
+    try { fn(payload); } catch (err) { console.error(err); }
+  }
+}
+
+/** Settings that the running engine accepts without being rebuilt. */
+const LIVE_SETTINGS = new Set([
+  'pitchSemitones', 'formantSemitones', 'breathiness', 'tiltDb',
+  'outputGainDb', 'shiftUnvoiced',
+]);
+
+const CONTROLS = {
+  pitchSemitones: ui.pitch, formantSemitones: ui.formant,
+  breathiness: ui.breath, tiltDb: ui.tilt, intonation: ui.intonation,
+  outputGainDb: ui.gain, f0Min: ui.f0min, f0Max: ui.f0max,
+  onsetLookaheadMs: ui.onsetLookahead,
+};
+
+window.natvox = {
+  VoiceChanger,
+  PRESETS,
+  presets: () => [...PRESET_NAMES],
+  DEFAULT_PROFILE,
+
+  /** What is in force right now. */
+  settings: () => ({ ...readProfile() }),
+
+  /** Engine delay in milliseconds, or 0 when not running. */
+  latencyMs: () => (state.latencySamples * 1000) / (state.ctx ? state.ctx.sampleRate : 48000),
+
+  isRunning: () => state.running,
+
+  /**
+   * Apply settings, by name or as an object. Rebuilds the audio graph if any
+   * of them sets the latency budget, since that is fixed at construction;
+   * resolves once the change is audible.
+   */
+  async set(settings) {
+    const values = typeof settings === 'string'
+      ? { ...DEFAULT_PROFILE, ...(PRESETS[settings] || {}) }
+      : settings;
+    if (typeof settings === 'string' && !PRESETS[settings]) {
+      throw new Error(`unknown voice "${settings}"; available: ${PRESET_NAMES.join(', ')}`);
+    }
+    let needsRebuild = false;
+    for (const [name, value] of Object.entries(values)) {
+      if (name === 'range') continue;
+      if (!(name in DEFAULT_PROFILE)) throw new Error(`unknown setting "${name}"`);
+      const control = CONTROLS[name];
+      if (control) {
+        control.value = String(value);
+      } else if (name === 'shiftUnvoiced') {
+        ui.shiftUnvoiced.checked = !!value;
+      } else {
+        // A real setting with no control on the page - highpassHz is the only
+        // one today. It lives on the profile the controls are read on top of,
+        // so the API can reach it without the page having to grow a slider for
+        // every knob the engine has.
+        state.profile = { ...state.profile, [name]: value };
+      }
+      if (!LIVE_SETTINGS.has(name)) needsRebuild = true;
+    }
+    if (typeof settings === 'string') ui.preset.value = settings;
+    refreshReadouts();
+    refreshWarnings();
+    if (state.running && (needsRebuild || outsideEngineRange())) await restart();
+    else pushShift();
+  },
+
+  start,
+  stop,
+
+  /** Convert a Float32Array offline; returns a Float32Array of the same length. */
+  render: (input, options = {}) =>
+    renderOffline({ input, profile: readProfile(), ...options }),
+
+  /** 'metrics' fires about every 50 ms while running; 'error' on failure. */
+  on(event, fn) {
+    if (!listeners[event]) throw new Error(`unknown event "${event}"`);
+    listeners[event].add(fn);
+    return () => listeners[event].delete(fn);
+  },
+};
+
 /* ------------------------------------------------------------------ wiring */
 
 for (const name of PRESET_NAMES) {
@@ -562,9 +672,16 @@ for (const control of [ui.pitch, ui.formant]) {
   control.addEventListener('input', pushShift);     // live while dragging
   control.addEventListener('change', settleShift);  // rebuild on release if needed
 }
-for (const control of [ui.breath, ui.gain]) {
+for (const control of [ui.breath, ui.gain, ui.tilt]) {
   control.addEventListener('input', pushShift);     // no geometry change at all
 }
+// Intonation widens the band of pitch ratios the engine may use, and the
+// latency budget is sized from that band, so it can only take effect by
+// rebuilding - same reason as the f0 range below.
+ui.intonation.addEventListener('input', () => {
+  ui.intonationOut.textContent = `${Number(ui.intonation.value).toFixed(2)}x`;
+});
+ui.intonation.addEventListener('change', restart);
 ui.shiftUnvoiced.addEventListener('change', pushShift);
 ui.onsetLookahead.addEventListener('input', () => {
   ui.onsetLookaheadOut.textContent = `${Number(ui.onsetLookahead.value).toFixed(0)} ms`;

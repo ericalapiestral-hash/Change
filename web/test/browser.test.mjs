@@ -144,3 +144,122 @@ describe('performance', () => {
       `only ${result.realtimeFactor.toFixed(1)}x real time (load ${(result.load * 100).toFixed(0)}%)`);
   });
 });
+
+describe('the voice cues, through the worklet', () => {
+  test('the new controls are on the page and carry the preset', async () => {
+    await app.page.selectOption('#preset', 'female');
+    assert.equal(Number(await app.page.inputValue('#intonation')), 1.22);
+    assert.equal(Number(await app.page.inputValue('#tilt')), 2);
+    assert.equal(Number(await app.page.inputValue('#breath')), 0.12);
+    await app.page.selectOption('#preset', 'off');
+  });
+
+  test('tilt moves the spectrum and its sign is the one advertised', async () => {
+    const input = vowel(130, 1.0);
+    const flat = await render(input, { tiltDb: 0 });
+    const bright = await render(input, { tiltDb: 6 });
+    const dark = await render(input, { tiltDb: -6 });
+    const centre = (x) => spectralCentroid(x, 48000);
+    assert.ok(centre(bright.output) > centre(flat.output),
+      'a positive tilt must make the voice brighter');
+    assert.ok(centre(dark.output) < centre(flat.output),
+      'a negative tilt must make it darker');
+  });
+
+  test('expanding the range does not move the pitch it is centred on', async () => {
+    const input = vowel(130, 1.2);
+    const flat = await render(input, { pitchSemitones: 5, f0Min: 70 });
+    const wide = await render(input, { pitchSemitones: 5, f0Min: 70, intonation: 1.4 });
+    const target = 130 * Math.pow(2, 5 / 12);
+    for (const [name, out] of [['flat', flat], ['wide', wide]]) {
+      const measured = measurePitch(out.output, 48000);
+      assert.ok(Math.abs(1200 * Math.log2(measured / target)) < 60,
+        `${name}: ${measured.toFixed(1)} Hz against ${target.toFixed(1)}`);
+    }
+  });
+
+  test('aspiration lands on the vowel and leaves the fricative alone', async () => {
+    const voiced = vowel(130, 1.0);
+    const noise = fricative(1.0);
+    const added = async (input) => {
+      const dry = await render(input, { pitchSemitones: 5, f0Min: 70, breathiness: 0 });
+      const wet = await render(input, { pitchSemitones: 5, f0Min: 70, breathiness: 0.25 });
+      return residualDb(dry.output, wet.output);
+    };
+    const onVowel = await added(voiced);
+    const onNoise = await added(noise);
+    assert.ok(onVowel > onNoise + 20,
+      `breath belongs on voiced audio: vowel ${onVowel.toFixed(1)} dB, `
+      + `fricative ${onNoise.toFixed(1)} dB`);
+  });
+
+  test('latency still fits a conversation with every cue turned on', async () => {
+    const { latency } = await render(vowel(130, 0.3),
+      { ...femaleProfile(), intonation: 1.3 });
+    assert.ok(latency > 0 && latency < 0.09 * 48000, `${latency} samples`);
+  });
+});
+
+function femaleProfile() {
+  return {
+    pitchSemitones: 7, formantSemitones: 2.6, f0Min: 70, f0Max: 400,
+    shiftUnvoiced: true, breathiness: 0.12, intonation: 1.22, tiltDb: 2,
+  };
+}
+
+describe('window.natvox', () => {
+  test('names the same voices the Python package does', async () => {
+    const names = await app.page.evaluate(() => window.natvox.presets());
+    for (const expected of ['female', 'female_soft', 'female_bright']) {
+      assert.ok(names.includes(expected), `missing voice ${expected}`);
+    }
+  });
+
+  test('setting a voice by name drives every control', async () => {
+    const settings = await app.page.evaluate(async () => {
+      await window.natvox.set('female_bright');
+      return window.natvox.settings();
+    });
+    assert.equal(settings.pitchSemitones, 7.5);
+    assert.equal(settings.intonation, 1.28);
+    assert.equal(settings.tiltDb, 3.5);
+    assert.equal(settings.shiftUnvoiced, true);
+  });
+
+  test('setting individual values leaves the rest alone', async () => {
+    const settings = await app.page.evaluate(async () => {
+      await window.natvox.set('female_soft');
+      await window.natvox.set({ tiltDb: -3 });
+      return window.natvox.settings();
+    });
+    assert.equal(settings.tiltDb, -3);
+    assert.equal(settings.pitchSemitones, 4.5);
+  });
+
+  test('an unknown voice or setting is an error, not a shrug', async () => {
+    const errors = await app.page.evaluate(async () => {
+      const caught = [];
+      for (const bad of ['sultry', { pitchSemitone: 4 }]) {
+        try { await window.natvox.set(bad); } catch (err) { caught.push(err.message); }
+      }
+      return caught;
+    });
+    assert.equal(errors.length, 2, 'both should have thrown');
+    assert.match(errors[0], /unknown voice/);
+    assert.match(errors[1], /unknown setting/);
+  });
+
+  test('render converts without the page running', async () => {
+    const result = await app.page.evaluate(async () => {
+      await window.natvox.set('female');
+      const input = new Float32Array(24000);
+      for (let i = 0; i < input.length; i++) {
+        input[i] = 0.3 * Math.sin((2 * Math.PI * 130 * i) / 48000);
+      }
+      const out = await window.natvox.render(input);
+      return { length: out.output.length, finite: out.output.every(Number.isFinite) };
+    });
+    assert.equal(result.length, 24000);
+    assert.ok(result.finite);
+  });
+});

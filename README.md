@@ -11,8 +11,9 @@ measurements that show it does.
 
 ```bash
 pip install -e .
-natvox process in.wav out.wav --preset male_to_female
-natvox live --preset male_to_female            # microphone -> output
+natvox process in.wav out.wav --preset female
+natvox live --preset female                    # microphone -> output
+natvox serve                                   # HTTP + WebSocket API
 ```
 
 Or run it live in a browser, with an interface built for judging whether it
@@ -185,6 +186,28 @@ semitones PSOLA stops being transparent.
 `younger` stay well inside the transparent range and are the ones that hold up
 best under close listening.
 
+### More than pitch and formants
+
+`male_to_female` moves pitch and vocal-tract size and nothing else. That is the
+transparent thing to do, and it is also why the result is recognisable as a man
+an octave up: pitch and tract length are two of the cues, and the ear uses more
+than two. The `female`, `female_soft` and `female_bright` presets add three
+more, each from something the literature measures rather than from taste.
+
+| Setting | Why | Measured |
+|---|---|---|
+| `intonation` | F0 standard deviation in read speech runs ~2.0–2.8 st for men against ~2.4–3.4 for women. A uniform shift multiplies every F0 by one factor, so it preserves the semitone range exactly — the output keeps a man's intonation. Applied per glottal pulse as a gain on the deviation from a 1.5 s running average, bounded to ±4 st. | 1.15× delivered range for a setting of 1.22. A steady tone is unaffected: doubling the setting moves its range by 0.25%, so tracker noise is not being amplified into wobble. |
+| `tilt_db` | Formant shifting scales the filter and leaves the source alone; a higher glottal open quotient means less energy low down and more air up top. A first-order shelf pivoting at 1 kHz, applied before loudness matching so the match removes the level the slope implies and not the slope. | 1.24 dB of band tilt delivered for a 2 dB setting. |
+| `breathiness` | Female phonation is measurably breathier — lower HNR, larger H1–H2. Gated to voiced audio, and its level keyed off the signal's energy *in the aspiration band*, because real aspiration is filtered by the same tract as the voice and so is loud on a bright vowel and quiet on a dark one. | −30.1 dB of added energy on voiced audio against −97.6 dB on consonants. The three presets put a sustained vowel at 27.7, 24.2 and 21.7 dB HNR — the range real modal-to-breathy female phonation measures in. The same engine without it returns 47 dB, cleaner than any human being. |
+
+`tools/bench.py` prints all three, each as an A/B against the same engine with
+that one control neutralised — they run alongside a pitch and formant shift
+that moves the same numbers, and a single run cannot separate them.
+
+**None of this changes whose voice it is**, and no amount of it will. A voice
+that is unmistakably a specific other person needs a conversion model; see
+below.
+
 ## Library use
 
 ```python
@@ -206,6 +229,61 @@ while True:
 
 `VoiceProfile.warnings()` reports settings that are legal but will cost
 naturalness (the CLI prints these automatically).
+
+## API
+
+`natvox.api` is the surface meant to be wrapped in a service or driven from a
+UI. `describe()` returns every parameter with its units, range and default, as
+data — the HTTP server and its request validator generate themselves from it,
+and a test asserts it covers exactly the fields `VoiceProfile` has.
+
+A `Session` is a live conversion whose **latency does not move when the
+settings do**:
+
+```python
+from natvox import api
+
+session = api.Session(48000, "female")         # 74.4 ms at 48 kHz
+out_block = session.process(in_block)          # real-time safe
+session.set(pitch_semitones=6.0)               # from a control thread
+```
+
+The engine fixes its resampling kernel and its delay at construction, so
+changing settings means rebuilding, and rebuilding would move the delay under
+the caller — the audio jumping in time every time a slider moves. A session
+declares a delay up front covering a stated range of settings, pads whichever
+engine is currently shorter to match, and cross-fades between them. Because
+both are sample-aligned while that happens, a voice change adds no step larger
+than the signal's own slew rate. Tight bounds buy the delay back:
+`Session(48000, "female", adjust=(1, 0.5), f0_floor=70)` is 61.9 ms.
+
+The rule for what may change is the budget and nothing else: `set()` builds the
+engine the request describes and accepts it if its delay fits, naming the
+shortfall in milliseconds if it does not.
+
+## Server
+
+```bash
+natvox serve                       # http://127.0.0.1:8420
+```
+
+| Endpoint | |
+|---|---|
+| `GET /v1/schema` | every parameter, its units and range |
+| `GET /v1/voices` | the voices this server knows |
+| `POST /v1/voices` | register one from JSON |
+| `POST /v1/convert?voice=female` | a whole file in, a whole file out (WAV or raw float32) |
+| `GET /v1/stream?voice=female` | WebSocket: PCM in, PCM out, JSON text frames to change the voice while it runs |
+
+Standard library only, RFC 6455 framing included — the engine's one hard
+dependency is numpy, and a service that dragged in a web framework would be
+harder to deploy than the thing it serves. It binds to loopback by default, and
+**that default is the security model**: there is no authentication, so anything
+that can reach the port can use the engine. `--host` makes putting it elsewhere
+a decision someone takes.
+
+The browser build exposes the same surface as `window.natvox` — same voice
+names, same settings in camelCase, same rule about rebuilding.
 
 ## Neural voice conversion
 
@@ -239,11 +317,21 @@ reconstructs to −322 dB. It has **not** been run against a real checkpoint.
 
 ```bash
 pip install -e '.[dev]'
-pytest                      # 170 tests
+pytest                      # 267 tests
 python tools/bench.py       # artifact measurements
 
-cd web && npm install && npm test     # 84 more, including the live path
+cd web && npm install && npm test     # 100 more, including the live path
 ```
+
+The browser build is a port, and a port degrades quietly: a window off by one,
+a filter designed a different way, a random stream consumed in a different
+order. So the two are diffed sample for sample against committed reference
+vectors, which is why both share a portable random generator and identical
+transform sizes. The current residual is −152 dB, the float32 precision of the
+fixture files themselves. Regenerate them with `python tools/make_fixtures.py`
+whenever the Python engine's output legitimately changes, and commit the diff
+with it — the inputs are held fixed so that a refresh shows up as a change to
+the reference output and nothing else.
 
 `tools/synth_speech.py` generates the reference utterance: a source-filter
 synthesiser with gliding formants, jitter, shimmer, fricatives and pauses. A
@@ -253,6 +341,23 @@ off" is a statement that can be checked rather than an impression.
 
 ## Limits
 
+- **This cannot make you sound like someone else.** Everything here reshapes
+  the speaker who is talking: their pitch, their vocal tract, their range,
+  their source spectrum, their phonation. It does not replace them. A voice
+  that is unmistakably a specific other person is a different problem, and it
+  needs a trained conversion model — the streaming machinery for one is in
+  `natvox.neural`, and no model is included.
+- **`intonation` is a gain, not a promised range.** It multiplies the deviation
+  from a 1.5 s running average, so the range actually delivered over a whole
+  passage is a fraction of the setting (1.15× measured for 1.22) and depends on
+  the speaker's own contour. Turning it into a promise would mean dividing by a
+  factor that is not a constant.
+- **Aspiration is measured as damage by the artifact metrics**, because it is
+  noise: the `female` preset reads 7.6 dB of spectral envelope error against
+  1.2 dB with breathiness at zero, and −25 dB of inharmonic energy against
+  −55 dB. That is the feature working, not a regression — but it does mean the
+  artifact columns are not comparable between a preset that breathes and one
+  that does not.
 - **Large shifts degrade.** Past roughly ±8 semitones of pitch or ±5 of
   formants, no time-domain method stays transparent, because the vocal-tract
   response being stretched stops matching a physically plausible speaker. The
