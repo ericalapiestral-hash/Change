@@ -168,6 +168,17 @@ class TestRunning:
         assert len(window.backends) > before
         window.stop()
 
+    def test_starting_says_when_a_device_is_being_resampled(self, window,
+                                                            monkeypatch):
+        """Nothing else in the system reports it, and the moment somebody
+        starts talking into it is when it matters."""
+        monkeypatch.setattr(window.studio, "rate_note",
+                            lambda: "the input device is set to 44100 Hz")
+        window.start()
+        pump(0.2)
+        assert "44100" in window.status.text()
+        window.stop()
+
     def test_changing_the_buffer_reopens_the_stream(self, window):
         window.start()
         pump(0.2)

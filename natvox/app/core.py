@@ -394,6 +394,22 @@ class Studio:
         target.write_bytes(write_wav(audio, self.settings.sample_rate))
         return target
 
+    def rate_note(self) -> str:
+        """Anything about the chosen devices worth saying before talking.
+
+        Only one thing so far, and it is the one nothing else reports: a
+        device left at a rate the stream is not using, which the audio engine
+        resamples silently.  Empty when there is nothing to say, so a caller
+        can print it unconditionally.
+        """
+        from .backend import rate_mismatch
+
+        if self.settings.use_remote:
+            return ""
+        return rate_mismatch(self.settings.input_device,
+                             self.settings.output_device,
+                             self.settings.sample_rate)
+
     def measure_round_trip(self, attempts: int = 5):
         """Time a sweep out of the output device and back in through the input.
 

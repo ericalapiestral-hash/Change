@@ -395,7 +395,9 @@ class Window(QtWidgets.QWidget):
             self.report(str(exc))
             return
         self.power.setText("Stop")
-        self.report("")
+        # The one thing worth saying at the moment somebody starts talking
+        # into it, because nothing else in the system will say it.
+        self.report(self.studio.rate_note())
 
     def stop(self) -> None:
         self.studio.stop()

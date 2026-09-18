@@ -380,6 +380,20 @@ class TestTheRoundTripMeasurement:
         finally:
             studio.stop()
 
+    def test_the_resampler_note_is_offered_before_anybody_talks(
+            self, cable_at_44100):
+        studio = Studio(Settings(input_device=1, output_device=1,
+                                 sample_rate=48000))
+        assert "44100" in studio.rate_note()
+        assert Studio(Settings(input_device=0, output_device=0)).rate_note() == ""
+
+    def test_there_is_nothing_to_say_about_a_machine_across_the_network(
+            self, cable_at_44100):
+        """Converting elsewhere does not go through these devices."""
+        studio = Studio(Settings(input_device=1, output_device=1,
+                                 use_remote=True, remote_url="ws://x/y"))
+        assert studio.rate_note() == ""
+
     def test_it_measures_the_pair_the_settings_name(self, monkeypatch):
         from natvox.app import loopback
 
