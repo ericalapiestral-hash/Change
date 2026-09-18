@@ -25,6 +25,19 @@ const METRICS_INTERVAL_SECONDS = 0.05;
 /** Load is averaged over this many quanta because Date.now() is 1 ms-grained. */
 const LOAD_WINDOW_QUANTA = 256;
 
+/**
+ * A quantum measuring at least this long is counted as heavy.
+ *
+ * The audio thread has no high-resolution clock: Date.now() reads in whole
+ * milliseconds against a 2.67 ms budget, so a single quantum can only ever
+ * measure 0, 1, 2 or 3 ms. A windowed mean of that is a usable load figure but
+ * it cannot show the thing that actually causes clicks, which is one block
+ * going over on its own. Counting quanta that measured 2 ms or more does show
+ * them: at that resolution such a block is unambiguously most of the budget,
+ * whatever the rounding.
+ */
+const HEAVY_QUANTUM_MS = 2;
+
 class NatvoxProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
@@ -48,6 +61,8 @@ class NatvoxProcessor extends AudioWorkletProcessor {
 
     this.quanta = 0;
     this.busyMs = 0;
+    this.heavy = 0;
+    this.heavyTotal = 0;
     this.windowStartMs = Date.now();
     this.load = 0;
     this.peakIn = 0;
@@ -176,12 +191,15 @@ class NatvoxProcessor extends AudioWorkletProcessor {
     for (let c = 1; c < output.length; c++) output[c].set(out0);
 
     this.quanta++;
-    this.busyMs += Date.now() - startMs;
+    const spent = Date.now() - startMs;
+    this.busyMs += spent;
+    if (spent >= HEAVY_QUANTUM_MS) { this.heavy++; this.heavyTotal++; }
     if (this.quanta >= LOAD_WINDOW_QUANTA) {
       const elapsed = Date.now() - this.windowStartMs;
       this.load = elapsed > 0 ? this.busyMs / elapsed : 0;
       this.quanta = 0;
       this.busyMs = 0;
+      this.heavy = 0;
       this.windowStartMs = Date.now();
     }
 
@@ -194,6 +212,7 @@ class NatvoxProcessor extends AudioWorkletProcessor {
         peakOut: this.peakOut,
         clipped: this.clipped,
         load: this.load,
+        heavy: this.heavyTotal,
         f0: f0.f0,
         voiced: f0.voiced,
         periodicity: f0.periodicity,

@@ -161,3 +161,97 @@ class TestProfile:
     def test_unknown_preset_names_the_alternatives(self):
         with pytest.raises(KeyError, match="male_to_female"):
             presets.get("nope")
+
+
+class TestRealTimeSafety:
+    """What a real audio callback does to an engine that was only ever tested
+    offline: hands it garbage, and judges it on its worst block rather than its
+    average."""
+
+    @pytest.mark.parametrize("poison", [np.nan, np.inf, -np.inf])
+    def test_a_non_finite_sample_does_not_kill_the_stream(self, sample_rate, poison):
+        """An xrun or an interface unplugged mid-stream can put a NaN in the
+        buffer.  Before this was guarded, four of them raised out of the audio
+        callback, and because the exception escaped before the tracker's
+        cursor advanced it retried the same poisoned frame forever: the stream
+        stopped for good and the buffers grew without bound.  In the browser
+        it did the same thing silently.
+        """
+        rng = np.random.default_rng(0)
+        audio = 0.2 * rng.standard_normal(sample_rate * 2)
+        audio[sample_rate:sample_rate + 4] = poison
+
+        changer = VoiceChanger(sample_rate, presets.get("male_to_female"))
+        out = np.concatenate([changer.process(audio[i:i + 128])
+                              for i in range(0, audio.size, 128)])
+        assert np.all(np.isfinite(out)), "non-finite samples reached the output"
+        tail = out[-sample_rate // 2:]
+        assert np.sqrt(np.mean(tail * tail)) > 0.01, "the engine never recovered"
+
+    def test_the_first_block_is_not_the_most_expensive_one(self, sample_rate):
+        """Priming used to happen inside the first process() call, which made
+        that one callback carry a whole latency of pitch tracking - over the
+        deadline at 128 frames and twice it at 64, so the first callback was
+        near-certain to drop out.  It now happens at construction.
+        """
+        import time
+
+        rng = np.random.default_rng(1)
+        audio = 0.2 * rng.standard_normal(sample_rate)
+        changer = VoiceChanger(sample_rate, presets.get("male_to_female"))
+        changer.process(audio[:128])          # warm numpy and scipy paths
+        changer = VoiceChanger(sample_rate, presets.get("male_to_female"))
+
+        started = time.perf_counter()
+        changer.process(audio[:128])
+        first = time.perf_counter() - started
+        rest = []
+        for i in range(128, 128 * 60, 128):
+            started = time.perf_counter()
+            changer.process(audio[i:i + 128])
+            rest.append(time.perf_counter() - started)
+        assert first < 6 * np.median(rest), (
+            f"first block {first * 1e6:.0f} us against a median of "
+            f"{np.median(rest) * 1e6:.0f} us")
+
+    def test_nothing_grows_without_bound(self, sample_rate):
+        """Sixty seconds of speech must not leave the engine holding more than
+        it started with."""
+        from synth_speech import utterance
+
+        audio, _ = utterance(sample_rate)
+        changer = VoiceChanger(sample_rate, presets.get("male_to_female"))
+        for _ in range(4):
+            changer.process(audio[:128])
+        baseline = (changer._in._buf.nbytes + changer._acc._sig.nbytes,
+                    len(changer._marks), len(changer._frames))
+        long_audio = np.tile(audio, 25)      # ~60 s
+        for i in range(0, long_audio.size, 128):
+            changer.process(long_audio[i:i + 128])
+        after = (changer._in._buf.nbytes + changer._acc._sig.nbytes,
+                 len(changer._marks), len(changer._frames))
+        assert after[0] == baseline[0], f"buffers grew {baseline[0]} -> {after[0]}"
+        assert after[1] < 64 and after[2] < 64, f"lists grew to {after[1:]}"
+
+    @pytest.mark.parametrize("name", ["silence-then-shout", "sweep", "clipping",
+                                      "hum", "dc"])
+    def test_pathological_inputs_stay_finite_and_bounded(self, sample_rate, name):
+        n = sample_rate
+        t = np.arange(n) / sample_rate
+        if name == "silence-then-shout":
+            audio = np.zeros(n)
+            audio[n // 2:] = 0.9 * np.sin(2 * np.pi * 130 * t[n // 2:])
+        elif name == "sweep":
+            audio = 0.5 * np.sin(2 * np.pi * np.cumsum(np.linspace(60, 600, n)) / sample_rate)
+        elif name == "clipping":
+            audio = np.clip(4.0 * np.sin(2 * np.pi * 150 * t), -1.0, 1.0)
+        elif name == "hum":
+            audio = 0.4 * np.sin(2 * np.pi * 50 * t) + 0.2 * np.sin(2 * np.pi * 130 * t)
+        else:
+            audio = 0.6 + 0.2 * np.sin(2 * np.pi * 130 * t)
+
+        changer = VoiceChanger(sample_rate, presets.get("male_to_female"))
+        out = np.concatenate([changer.process(audio[i:i + 128])
+                              for i in range(0, n, 128)])
+        assert np.all(np.isfinite(out))
+        assert np.max(np.abs(out)) <= 1.0

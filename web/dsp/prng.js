@@ -69,6 +69,46 @@ export class Prng {
   }
 }
 
+/**
+ * Gaussian noise where sample *i* depends only on *i* and the seed.
+ *
+ * The breath bed needs one normal per output sample. Deriving each from its
+ * own index rather than from a running stream makes the block computable in
+ * one vector operation on the Python side, and makes both sides *more*
+ * strictly independent of blocking: sample *i* is the same value however the
+ * caller chunks its audio, rather than merely happening to be because the
+ * draws are consumed in order.
+ */
+export class CounterNoise {
+  constructor(seed = 0xb2ea7) {
+    this.seed = seed >>> 0;
+    this.index = 0;
+  }
+
+  reset() { this.index = 0; }
+
+  /** Fill `out[0..count)` with standard normals. */
+  fill(out, count) {
+    for (let i = 0; i < count; i++) {
+      const key = (Math.imul(this.index & 0x7fffffff, 0x9e3779b9) + this.seed) >>> 0;
+      const a = splitmix32((key ^ 0x85ebca6b) >>> 0);
+      const b = splitmix32((key ^ 0xc2b2ae35) >>> 0);
+      let u1 = (a >>> 8) * (1 / 16777216);
+      const u2 = (b >>> 8) * (1 / 16777216);
+      if (u1 < 1e-12) u1 = 1e-12;
+      out[i] = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+      this.index++;
+    }
+  }
+}
+
+function splitmix32(z) {
+  z = Math.imul(z, 0x21f0aaad) >>> 0;
+  z = (z ^ (z >>> 15)) >>> 0;
+  z = Math.imul(z, 0x735a2d97) >>> 0;
+  return (z ^ (z >>> 15)) >>> 0;
+}
+
 function rotl(x, k) {
   return (((x << k) | (x >>> (32 - k))) >>> 0);
 }

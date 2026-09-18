@@ -23,7 +23,7 @@ from scipy import signal
 from .config import VoiceProfile
 from .dsp.epochs import EpochTracker
 from .dsp.f0 import YinF0Tracker
-from .dsp.prng import Prng
+from .dsp.prng import CounterNoise, Prng
 from .dsp.psola import Mark, build_grain, grain_half_length, nearest_mark
 from .dsp.resample import GrainResampler
 from .dsp.util import (
@@ -187,6 +187,7 @@ class VoiceChanger:
         alpha = float(np.exp(-1.0 / (env_tc * sample_rate)))
         self._env_b, self._env_a = [1.0 - alpha], [1.0, -alpha]
         self._reset_state()
+        self._prime()
 
     # ------------------------------------------------------------------ setup
     def _reset_state(self) -> None:
@@ -208,7 +209,28 @@ class VoiceChanger:
         # Both are the portable generator rather than numpy's, so that the
         # browser build produces the same samples and the two can be diffed.
         self._jitter_rng = Prng(0x5EED)
-        self._noise_rng = Prng(0xB2EA7)
+        self._noise_rng = CounterNoise(0xB2EA7)
+
+    def _prime(self) -> None:
+        """Fill the delay line and run the analysis it implies.
+
+        This used to happen inside the first :meth:`process` call, which made
+        that one callback do the pitch tracking for a whole latency of padding
+        -- measured at 2.0-2.8 ms, over the deadline at 128 frames and twice it
+        at 64, so the very first callback was guaranteed to drop out.  The work
+        is identical wherever it runs, since every stage is a catch-up loop
+        gated on the buffer, so it is done at construction where overrunning
+        costs nothing.
+        """
+        if self._primed:
+            return
+        pad = np.zeros(self._latency)
+        self._in.push(pad)
+        self._dry.push(pad)
+        self._primed = True
+        self._track_pitch()
+        self._extend_marks()
+        self._synthesise()
 
     def reset(self) -> None:
         """Clear all state; use between unrelated streams."""
@@ -220,6 +242,7 @@ class VoiceChanger:
         self._dry = RingBuffer(self._dry._buf.size)
         self._acc = OverlapAccumulator(self._acc._sig.size)
         self._reset_state()
+        self._prime()
 
     @property
     def latency_samples(self) -> int:
@@ -234,11 +257,13 @@ class VoiceChanger:
     def process(self, block: np.ndarray) -> np.ndarray:
         """Transform one block and return the same number of samples."""
         x = np.asarray(block, dtype=np.float64).reshape(-1)
-        if not self._primed:
-            pad = np.zeros(self._latency)
-            self._in.push(pad)
-            self._dry.push(pad)
-            self._primed = True
+        # One NaN or Inf from the device -- an xrun, an interface unplugged
+        # mid-stream, a misbehaving upstream plugin -- otherwise reaches pitch
+        # tracking, raises out of the audio callback and stops the stream for
+        # good, with the buffers growing without bound behind it.
+        if x.size and not np.isfinite(x).all():
+            x = np.nan_to_num(x, copy=True, nan=0.0, posinf=0.0, neginf=0.0)
+        self._prime()
 
         filtered = self._highpass(x)
         self._in.push(filtered)

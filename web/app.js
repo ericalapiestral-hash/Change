@@ -370,7 +370,12 @@ function onWorkletMessage(msg) {
   ui.f0Now.textContent = msg.f0 > 0 ? `${msg.f0.toFixed(0)} Hz` : '--';
   ui.voicing.textContent = msg.voiced ? t('voicedYes') : t('voicedNo');
   ui.voicing.className = msg.voiced ? 'voiced' : '';
-  ui.load.textContent = `${Math.round(msg.load * 100)}%`;
+  // The mean alone cannot show a single block going over, which is what
+  // actually clicks; the heavy count can.
+  ui.load.textContent = msg.heavy > 0
+    ? `${Math.round(msg.load * 100)}% · ${msg.heavy}`
+    : `${Math.round(msg.load * 100)}%`;
+  ui.load.className = msg.heavy > 0 ? 'heavy' : '';
   if (msg.voiced && msg.f0 > 0) {
     noteF0(msg.f0);
     drawHistogram();

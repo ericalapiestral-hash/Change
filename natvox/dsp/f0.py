@@ -90,10 +90,16 @@ class YinF0Tracker:
         self.span = self.window + self.tau_max
         self._span = self.span
         # Powers of two, not merely "fast" lengths: the browser build uses a
-        # radix-2 transform, and any size at or above span+window yields the
-        # same linear correlation, so matching sizes costs nothing and makes
-        # the two implementations comparable sample for sample.
-        self._nfft = _next_pow2(self.span + self.window)
+        # radix-2 transform, and matching sizes makes the two implementations
+        # comparable sample for sample.
+        #
+        # The bound is `span`, not `span + window`.  Only lags 0..tau_max are
+        # ever read, and circular wrap-around reaches those only when
+        # nfft <= tau_max + window - 1; with window == tau_max that is
+        # nfft < span.  Using the looser bound crossed a power of two below
+        # f0_min = 75 Hz and doubled the transform for nothing -- which is
+        # every preset that needs the speed most.
+        self._nfft = _next_pow2(self.span)
 
         # Label the frame at the centre of everything it looks at: that is
         # where the estimate is actually valid, and it splits the buffering

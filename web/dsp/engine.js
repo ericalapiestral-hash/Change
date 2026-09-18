@@ -24,7 +24,7 @@ import { Biquad, BiquadChain, OnePole, butterworthHighpass, butterworthLowpass }
 import { OverlapAccumulator, RingBuffer } from './buffers.js';
 import { YinF0Tracker } from './f0.js';
 import { EpochTracker } from './epochs.js';
-import { Prng } from './prng.js';
+import { CounterNoise, Prng } from './prng.js';
 import { GrainResampler } from './resampler.js';
 import { WindowScratch } from './windows.js';
 import { grainHalfLength, nearestMark } from './psola.js';
@@ -231,7 +231,7 @@ export class VoiceChanger {
     // Separate streams: sharing one generator would interleave the two draw
     // sequences differently depending on how many marks a given block produced.
     this.jitterRng = new Prng(0x5eed);
-    this.noiseRng = new Prng(0xb2ea7);
+    this.noiseRng = new CounterNoise(0xb2ea7);
     this.breath = new BiquadChain([
       new Biquad(butterworthHighpass(sampleRate, Math.min(1500, sampleRate * 0.45))),
       new Biquad(butterworthLowpass(sampleRate, Math.min(7000, sampleRate * 0.475))),
@@ -245,6 +245,7 @@ export class VoiceChanger {
     this.scratchDry = new Float64Array(4096);
 
     this.reset();
+    this.prime();
   }
 
   get latencyMs() { return (1000 * this.latencySamples) / this.sampleRate; }
@@ -303,7 +304,7 @@ export class VoiceChanger {
     this.envIn.set(0); this.envOut.set(0); this.gainSmooth.set(1);
     this.breathEnv.set(0);
     this.jitterRng = new Prng(0x5eed);
-    this.noiseRng = new Prng(0xb2ea7);
+    this.noiseRng = new CounterNoise(0xb2ea7);
 
     this.primed = false;
     this.f0Pos = this.f0.half;
@@ -313,6 +314,7 @@ export class VoiceChanger {
     this.outPos = 0;
     this.markStart = 0; this.markEnd = 0; this.markHint = 0;
     this.frameStart = 0; this.frameEnd = 0; this.frameHint = 0;
+    if (this.in) this.prime();
   }
 
   _ensureScratch(n) {
@@ -330,24 +332,44 @@ export class VoiceChanger {
    * Transform `n` samples from `input` into `output` (which may be the same
    * array). Returns n.
    */
+  /**
+   * Fill the delay line and run the analysis it implies.
+   *
+   * Doing this inside the first process() call made that one callback carry a
+   * whole latency's worth of pitch tracking - 88-98% of a 128-frame quantum,
+   * so the very first callback was near-certain to drop out. The work is
+   * identical wherever it runs, since every stage is a catch-up loop gated on
+   * the buffer, so it happens at construction where overrunning costs nothing.
+   */
+  prime() {
+    if (this.primed) return;
+    const pad = this.latencySamples;
+    const zeros = new Float64Array(Math.min(pad, 4096));
+    let left = pad;
+    while (left > 0) {
+      const k = Math.min(left, zeros.length);
+      this.in.push(zeros, k);
+      this.dry.push(zeros, k);
+      left -= k;
+    }
+    this.primed = true;
+    this._trackPitch();
+    this._extendMarks();
+    this._synthesise();
+  }
+
   process(input, n, output) {
     this._ensureScratch(n);
-    if (!this.primed) {
-      // Prime with silence so that output index 0 corresponds to input 0.
-      const pad = this.latencySamples;
-      const zeros = new Float64Array(Math.min(pad, 4096));
-      let left = pad;
-      while (left > 0) {
-        const k = Math.min(left, zeros.length);
-        this.in.push(zeros, k);
-        this.dry.push(zeros, k);
-        left -= k;
-      }
-      this.primed = true;
-    }
+    this.prime();
 
+    // One NaN or Inf from the device - an xrun, an interface unplugged
+    // mid-stream - otherwise poisons the pitch tracker's state and every
+    // sample after it comes out non-finite, silently and permanently.
     const x = this.scratchIn;
-    for (let i = 0; i < n; i++) x[i] = input[i];
+    for (let i = 0; i < n; i++) {
+      const v = input[i];
+      x[i] = Number.isFinite(v) ? v : 0;
+    }
     if (this.highpass) this.highpass.process(x, n);
     this.in.push(x, n);
     this.dry.push(x, n);
@@ -654,7 +676,7 @@ export class VoiceChanger {
   _addBreath(wet, n) {
     const amount = this.profile.breathiness;
     const noise = this.noiseScratch, env = this.envScratch;
-    for (let i = 0; i < n; i++) noise[i] = this.noiseRng.normal();
+    this.noiseRng.fill(noise, n);
     this.breath.process(noise, n);
     for (let i = 0; i < n; i++) env[i] = Math.abs(wet[i]);
     this.breathEnv.process(env, n);

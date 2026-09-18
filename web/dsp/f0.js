@@ -61,7 +61,12 @@ export class YinF0Tracker {
     this.half = this.span >> 1;
     this.lookahead = this.span - this.half;
 
-    this.fft = new RealFFT(nextPow2(this.span + this.window));
+    // The bound is `span`, not `span + window`. Only lags 0..tauMax are ever
+    // read, and circular wrap-around reaches those only when
+    // nfft <= tauMax + window - 1; with window === tauMax that is nfft < span.
+    // The looser bound crossed a power of two below f0Min = 75 Hz and doubled
+    // the transform for nothing.
+    this.fft = new RealFFT(nextPow2(this.span));
     const bins = this.fft.n / 2 + 1;
     this.winRe = new Float64Array(bins);
     this.winIm = new Float64Array(bins);

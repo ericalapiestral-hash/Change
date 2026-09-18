@@ -72,13 +72,13 @@ textbook descriptions:
 
 Against synthesised signals with known ground truth (`python tools/bench.py`):
 
-| preset | pitch | formant | latency | CPU | envelope | inharmonic | HNR | onset | creak | jitter |
-|---|---|---|---|---|---|---|---|---|---|---|
-| brighter | +1.5 st | +1.0 st | 58 ms | 10% | 0.68 dB | −55.1 dB | 36.7 dB | 19 ms | 2% | 1.02× |
-| younger | +3.0 st | +2.2 st | 58 ms | 9% | 0.76 dB | −55.3 dB | 31.1 dB | 19 ms | 2% | 1.22× |
-| deeper | −2.5 st | −1.2 st | 67 ms | 10% | 0.97 dB | −55.4 dB | 41.8 dB | 20 ms | 0% | 0.97× |
-| male_to_female | +7.0 st | +2.6 st | 61 ms | 17% | — ¹ | −45.6 dB ¹ | 42.7 dB | 18 ms | 0% | 1.08× |
-| female_to_male | −7.0 st | −2.6 st | 50 ms | 9% | 1.64 dB | −55.1 dB | 35.6 dB | 14 ms | 1% | 1.48× |
+| preset | pitch | formant | latency | envelope | inharmonic | HNR | onset | creak | jitter |
+|---|---|---|---|---|---|---|---|---|---|
+| brighter | +1.5 st | +1.0 st | 58 ms | 0.68 dB | −55.1 dB | 36.7 dB | 19 ms | 2% | 1.02× |
+| younger | +3.0 st | +2.2 st | 58 ms | 0.76 dB | −55.3 dB | 31.1 dB | 19 ms | 2% | 1.22× |
+| deeper | −2.5 st | −1.2 st | 67 ms | 0.97 dB | −55.4 dB | 41.8 dB | 20 ms | 0% | 0.97× |
+| male_to_female | +7.0 st | +2.6 st | 61 ms | — ¹ | −45.6 dB ¹ | 42.7 dB | 18 ms | 0% | 1.08× |
+| female_to_male | −7.0 st | −2.6 st | 50 ms | 1.64 dB | −55.1 dB | 35.6 dB | 14 ms | 1% | 1.48× |
 
 ¹ this preset mixes in aspiration noise on purpose, which both the envelope and
 inharmonic metrics count as error.
@@ -97,6 +97,24 @@ period-to-period irregularity returned as a multiple of a human-like input's
 own; under 1.0 means the voice came back more perfect than the speaker (was
 0.52-0.75×).
 
+**CPU is reported per block, not as an average.** An offline real-time factor
+is about 9%, but a callback is judged on its worst block, and quoting the
+average was hiding a factor of ten. Per-block cost for the heaviest preset in
+the Python engine, deterministic across repetitions:
+
+| block size | median | p99 | worst | worst, as a share of the deadline |
+|---|---|---|---|---|
+| 64 frames | 214 µs | 977 µs | 1225 µs | 92% |
+| 128 frames | 432 µs | 947 µs | 1170 µs | 44% |
+| 256 frames | 621 µs | 1141 µs | 1388 µs | 26% |
+
+So 64-frame blocks are marginal for the heaviest preset and 128 or more has
+room. The browser build runs on 128-frame quanta by construction. The first
+block used to be the most expensive of all - it carried a whole latency's worth
+of pitch tracking, over the deadline at 128 frames and twice it at 64, so the
+first callback was near-certain to drop out; that work happens at construction
+now.
+
 Other properties the test suite pins down:
 
 - Consonants pass through at **−69 dB** residual (bit-exact) unless you ask for
@@ -109,6 +127,13 @@ Other properties the test suite pins down:
 - The browser engine matches the Python one to better than **−100 dB** on
   speech, creak and noise across six presets.
 - Grain-rate modulation on fricatives stays within 3 dB of the input's own.
+- A NaN or Inf from the device is survived rather than fatal. Four of them used
+  to raise out of the audio callback, and because the exception escaped before
+  the tracker's cursor advanced it retried the same poisoned frame forever: the
+  stream stopped for good and buffers grew without bound. In the browser it did
+  the same thing silently, turning 95% of the output non-finite.
+- Sixty seconds of speech leaves the engine holding exactly what it started
+  with: no buffer reallocates and no list grows.
 
 ## Latency
 
@@ -211,7 +236,7 @@ reconstructs to −322 dB. It has **not** been run against a real checkpoint.
 
 ```bash
 pip install -e '.[dev]'
-pytest                      # 151 tests
+pytest                      # 170 tests
 python tools/bench.py       # artifact measurements
 
 cd web && npm install && npm test     # 75 more, including the browser
@@ -236,6 +261,8 @@ off" is a statement that can be checked rather than an impression.
   than a tuning choice. That is usable for conversation but not negligible;
   `f0_min` and `onset_lookahead_ms` are the knobs, and both trade against
   quality.
+- **64-frame blocks are marginal** for the heaviest preset in the Python
+  engine: the worst block reaches 92% of its deadline. Use 128 or more.
 - **No audio hardware was available here.** The browser build is tested end to
   end through the real AudioWorklet, but on an offline render rather than a
   live device; the Python `sounddevice` binding is untested against real
