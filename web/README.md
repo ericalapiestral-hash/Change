@@ -98,7 +98,7 @@ click.
 ## Tests
 
 ```bash
-npm test              # 84 tests: unit, parity, offline render, live path
+npm test              # 100 tests: unit, parity, offline render, live path
 npm run test:parity   # just the comparison against Python
 npm run test:live     # just the live microphone path
 ```
@@ -108,26 +108,35 @@ The live tests start the page with Chromium's fake capture device pointed at
 move a slider, press Capture and play the loop - asserting on a structured
 snapshot rather than on the DOM, since the DOM is localised.
 
-`test/fixtures/` is regenerated from the Python engine; if the DSP changes on
-either side, regenerate it and the parity test will say whether the two still
-agree:
+`test/fixtures/` holds the reference vectors the parity test compares against.
+Regenerate them from the Python engine whenever its output legitimately
+changes, and commit the diff with it:
 
 ```bash
-cd .. && python - <<'PY'
-import json, numpy as np, natvox
-out = 'web/test/fixtures'
-manifest = json.load(open(f'{out}/manifest.json'))
-signals = {k: np.fromfile(f'{out}/in_{k}.f32', dtype='<f4')
-           for k in ['speech', 'creak', 'noise']}
-for case in manifest['cases']:
-    profile = natvox.presets.get(case['preset'])
-    y = natvox.process_array(signals[case['signal']].astype(np.float64),
-                             48000, profile, block_size=128).astype('<f4')
-    y.tofile(f"{out}/py_{case['signal']}_{case['preset']}.f32")
-    case['latency'] = natvox.VoiceChanger(48000, profile).latency_samples
-json.dump(manifest, open(f'{out}/manifest.json', 'w'), indent=1)
-PY
+cd .. && python tools/make_fixtures.py
 ```
+
+The input signals are held fixed, so a refresh shows up as a change to the
+reference output and nothing else. The generator also fails if `VoiceProfile`
+has grown a field that `DEFAULT_PROFILE` in `dsp/engine.js` does not have,
+which is the failure mode a port actually has.
+
+## Driving it from other code
+
+The page builds itself on `window.natvox`, which is exposed so the same engine
+can be driven from anything else on the page:
+
+```js
+await window.natvox.set('female');          // or an object of settings
+await window.natvox.set({ tiltDb: -2 });
+const { output } = await window.natvox.render(float32Samples);
+window.natvox.on('metrics', (m) => console.log(m.f0, m.load));
+```
+
+It mirrors `natvox.api` on the Python side: the same voice names, the same
+settings in camelCase, and the same rule that a setting sizing the latency
+budget (`intonation`, `f0Min`, `f0Max`, `onsetLookaheadMs`, `highpassHz`) takes
+effect by rebuilding the graph rather than being applied live.
 
 ## Browser support
 
