@@ -24,9 +24,10 @@ natvox app                 # pick a microphone, pick a voice, hold space to A/B
 natvox app --check         # first: can this computer keep up?
 ```
 
-`packaging/` builds it into something that runs without Python
-(`pyinstaller packaging/natvox.spec`), and explains the virtual audio cable
-that gets it into a game or a call.
+A Windows build comes out of `.github/workflows/build.yml` — it runs the tests
+on Windows, builds, and then runs what it built, because PyInstaller reports
+success for bundles that never open a window. `packaging/` has the recipe and
+explains the virtual audio cable that gets it into a game or a call.
 
 Or run it live in a browser, with an interface built for judging whether it
 sounds converted - instant A/B against a delay-matched dry signal, a loop

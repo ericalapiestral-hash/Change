@@ -180,7 +180,14 @@ class TestServerManners:
         """The normal way a stream ends is the other end going away.  A stack
         trace for each one trains whoever runs this to ignore the log."""
         import socket as socketlib
+        import struct
+        import sys
 
+        # SO_LINGER is `struct linger`, and that struct is two ints on Unix and
+        # two u_shorts on Windows.  Packing the wrong one is not ignored: the
+        # call fails and the socket closes politely, which is the one thing
+        # this test must not do.
+        linger = struct.pack("HH" if sys.platform == "win32" else "ii", 1, 0)
         host, port = service.split(":")
         for _ in range(3):
             sock = socketlib.create_connection((host, int(port)), timeout=5)
@@ -189,8 +196,7 @@ class TestServerManners:
                          b"Sec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==\r\n"
                          b"Sec-WebSocket-Version: 13\r\n\r\n")
             sock.recv(200)
-            sock.setsockopt(socketlib.SOL_SOCKET, socketlib.SO_LINGER,
-                            __import__("struct").pack("ii", 1, 0))
+            sock.setsockopt(socketlib.SOL_SOCKET, socketlib.SO_LINGER, linger)
             sock.close()                         # RST, not a clean close
         time.sleep(0.4)
         captured = capfd.readouterr()

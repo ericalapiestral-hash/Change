@@ -1,15 +1,41 @@
 # Building the desktop program
 
+## Windows, without a Windows machine
+
+PyInstaller bundles the interpreter it is running under and does not
+cross-compile, so a Windows build happens on Windows.
+`.github/workflows/build.yml` does it on a GitHub runner:
+
+* Actions → **build** → Run workflow, or push a `v*` tag.
+* It runs the test suite **on Windows first**, then builds, then runs what it
+  built — the console executable has to print a real measurement and the
+  windowed one has to stay open for twenty seconds. PyInstaller reports
+  success for bundles that are missing a module they only import at startup,
+  and the first anyone knows is a window that never opens.
+* The zip lands under the run's Artifacts.
+
+## By hand
+
 ```bash
 pip install -e '.[app]' pyinstaller
-pyinstaller packaging/natvox.spec
+cd packaging && pyinstaller natvox.spec
 ```
 
-`dist/natvox/natvox` (or `natvox.exe`) then runs on a machine with no Python
-on it. Build it on the platform you want it for — PyInstaller bundles the
-interpreter it is running under, and there is no cross-compiling.
+Two executables come out, sharing every library in the bundle:
 
-The bundle is **279 MB**, measured on Linux. Almost all of it is three
+| | |
+|---|---|
+| `natvox` / `natvox.exe` | windowed — double-click this |
+| `natvox-cli` / `natvox-cli.exe` | console — `natvox-cli --check`, `--probe` |
+
+There are two because on Windows a program either has a console or it does
+not, and it cannot be both. A windowed build has no stdout at all, so
+`natvox.exe --check` prints nothing and looks like a crash; a console build
+pops a black window on a double-click and looks like a mistake. They tell
+themselves apart by their own filename. On Linux and macOS the distinction
+does not exist and either one behaves the same.
+
+The bundle is **288 MB**, measured on Linux. Almost all of it is three
 libraries: PySide6 (99 MB, after excluding the Qt modules the window never
 touches), SciPy (73 MB) and NumPy (42 MB). The engine's own code is under a
 megabyte. SciPy is the one lever left — the engine uses four functions from
@@ -45,7 +71,8 @@ its own output, which sounds exactly as bad as it sounds.
 ## Checking the machine first
 
 ```bash
-natvox app --check
+natvox app --check          # from a checkout
+natvox-cli --check          # from the bundle
 ```
 
 It runs the engine at each buffer size and reports the **worst** block against
@@ -56,8 +83,8 @@ machine.
 ## Converting somewhere else
 
 ```bash
-natvox serve                       # on the other machine
-natvox app --probe ws://that-machine:8420/v1/stream
+natvox serve                              # on the other machine
+natvox-cli --probe ws://that-machine:8420/v1/stream
 ```
 
 The probe measures the round trip and the jitter on the link you actually
