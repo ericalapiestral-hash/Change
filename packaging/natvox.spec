@@ -42,27 +42,40 @@ analysis = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
+    # QtOpenGL is deliberately *not* excluded: it is small, and on Windows the
+    # platform plugin reaches for it.  Saving a megabyte is not worth a bundle
+    # that fails to open a window on somebody else's machine.
     excludes=EXCLUDE_QT + ["tkinter", "matplotlib", "IPython", "pytest",
-                           "PIL", "pandas", "setuptools", "PySide6.QtOpenGL"],
+                           "PIL", "pandas", "setuptools"],
     noarchive=False,
 )
 pyz = PYZ(analysis.pure)
 
-exe = EXE(
-    pyz,
-    analysis.scripts,
-    [],
-    exclude_binaries=True,
-    name="natvox",
-    debug=False,
-    strip=False,
-    upx=False,
-    # False, so a double-click opens the window and not a terminal behind it.
-    # `natvox app --check` still prints to a terminal when run from one.
-    console=False,
-)
+def executable(name: str, console: bool):
+    return EXE(
+        pyz,
+        analysis.scripts,
+        [],
+        exclude_binaries=True,
+        name=name,
+        debug=False,
+        strip=False,
+        upx=False,
+        console=console,
+    )
+
+
+# Two, from one Analysis, sharing every library in the bundle.  On Windows a
+# program either has a console or it does not: a windowed build has no stdout,
+# so `natvox.exe --check` prints nothing and looks like a crash, and a console
+# build pops a black window on a double-click and looks like a mistake.  They
+# tell themselves apart by their own filename; see entry.py.
+gui = executable("natvox", console=False)
+cli = executable("natvox-cli", console=True)
+
 COLLECT(
-    exe,
+    gui,
+    cli,
     analysis.binaries,
     analysis.datas,
     strip=False,
