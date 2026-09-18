@@ -122,13 +122,35 @@ class TestChecking:
             "u", 404, "Not Found", {}, None))
         with pytest.raises(update.UpdateError) as raised:
             update.check()
-        assert update.TOKEN_ENV in str(raised.value)
+        assert "no way to tell the two apart" in str(raised.value)
+        assert update.HOW_TO_GET_A_TOKEN in str(raised.value)
+
+    def test_a_404_with_a_working_token_does_not_blame_the_token(self, monkeypatch):
+        """The token got an answer, so sending somebody to make another one is
+        an hour of the wrong work."""
+        serving(monkeypatch, error=urllib.error.HTTPError(
+            "u", 404, "Not Found", {}, None))
+        with pytest.raises(update.UpdateError) as raised:
+            update.check(token="github_pat_x")
+        assert "not an access problem" in str(raised.value)
+        assert update.TOKEN_ENV not in str(raised.value)
 
     def test_being_refused_names_the_token(self, monkeypatch):
         serving(monkeypatch, error=urllib.error.HTTPError(
             "u", 403, "Forbidden", {}, None))
         with pytest.raises(update.UpdateError, match=update.TOKEN_ENV):
             update.check()
+
+    def test_the_token_instructions_are_steps_not_a_noun(self):
+        """"Set an environment variable to a token with read access" is a
+        complete answer and a useless one: it assumes knowing what a token is,
+        which of the several kinds to make, and how Windows sets one."""
+        how = update.HOW_TO_GET_A_TOKEN
+        assert "github.com/settings" in how, "where to go"
+        assert update.REPO in how, "which repository to scope it to"
+        assert "Read-only" in how, "how little to grant"
+        assert "setx" in how, "how to set it on the platform this ships to"
+        assert "new one" in how, "setx does not affect the window you type it in"
 
     def test_no_network_is_a_sentence(self, monkeypatch):
         serving(monkeypatch, error=urllib.error.URLError("no route"))

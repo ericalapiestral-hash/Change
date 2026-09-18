@@ -73,6 +73,26 @@ LAUNCHERS = ("natvox.exe", "natvox")
 
 CONNECT_TIMEOUT = 20.0
 
+#: What to do about a private repository, in steps somebody can follow.
+#:
+#: "Set an environment variable to a token with read access" is a complete
+#: answer and a useless one: it assumes knowing what a token is, where GitHub
+#: keeps them, which of the several kinds to make, and how Windows sets an
+#: environment variable.  Every one of those is a place to give up.
+HOW_TO_GET_A_TOKEN = f"""This repository is private, so the update needs a token.
+
+  1. Open https://github.com/settings/personal-access-tokens/new
+  2. Repository access -> Only select repositories -> {REPO}
+  3. Permissions -> Repository permissions -> Contents -> Read-only
+  4. Generate, copy it, and in PowerShell:
+
+       setx {TOKEN_ENV} "github_pat_...."
+
+     then close that window and open a new one -- setx only affects
+     windows opened after it.
+
+Or make the repository public and none of this is needed."""
+
 #: Whole-download budget.  A per-read timeout bounds nothing on its own: a
 #: socket delivering one byte a minute never times out and never finishes.
 DOWNLOAD_DEADLINE = 900.0
@@ -323,14 +343,19 @@ def check(repo: str = REPO, tag: str = TAG, token: str | None = None,
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
             raise UpdateError(
-                "GitHub refused the request. If the repository is private, put "
-                f"a token with read access in the {TOKEN_ENV} environment "
-                "variable.") from exc
+                "GitHub refused the request -- the token is missing, expired, "
+                f"or has no access to {repo}.\n\n{HOW_TO_GET_A_TOKEN}") from exc
         if exc.code == 404:
+            if token:
+                raise UpdateError(
+                    f"there is no release tagged {tag!r} in {repo}. The token "
+                    "worked, so this is not an access problem.") from exc
             raise UpdateError(
-                f"no release tagged {tag!r} in {repo} -- or the repository is "
-                f"private and no token was given. GitHub reports both as 404, "
-                f"so if you know the release exists, set {TOKEN_ENV}.") from exc
+                f"GitHub says there is no release tagged {tag!r} in {repo}. "
+                "It says that both when there really is not one and when the "
+                f"repository is private and nobody asked with a token, and "
+                f"there is no way to tell the two apart from here.\n\n"
+                f"{HOW_TO_GET_A_TOKEN}") from exc
         raise UpdateError(f"GitHub returned {exc.code}: {exc.reason}") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise UpdateError(f"could not reach GitHub: {exc}") from exc
