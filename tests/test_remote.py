@@ -183,10 +183,13 @@ class TestServerManners:
         import struct
         import sys
 
-        # SO_LINGER is `struct linger`, and that struct is two ints on Unix and
-        # two u_shorts on Windows.  Packing the wrong one is not ignored: the
-        # call fails and the socket closes politely, which is the one thing
-        # this test must not do.
+        # SO_LINGER is `struct linger`, which is two ints on Unix and two
+        # u_shorts on Windows.  Windows turned out to accept the eight-byte
+        # version anyway -- this test passed on a runner before the difference
+        # was handled -- so this is not fixing a failure.  It is declining to
+        # depend on an undocumented tolerance in the one place where being
+        # wrong would be silent: a rejected setsockopt means the socket closes
+        # politely, and a polite close is the one thing this test must not do.
         linger = struct.pack("HH" if sys.platform == "win32" else "ii", 1, 0)
         host, port = service.split(":")
         for _ in range(3):
