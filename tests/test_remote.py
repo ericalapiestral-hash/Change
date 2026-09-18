@@ -176,34 +176,87 @@ class TestRemoteConverter:
 
 
 class TestServerManners:
-    def test_a_client_that_vanishes_is_not_a_server_error(self, service, capfd):
-        """The normal way a stream ends is the other end going away.  A stack
-        trace for each one trains whoever runs this to ignore the log."""
+    """A streaming server spends its life being hung up on.
+
+    The first version of these asserted only that no traceback was printed,
+    which passed -- and passed for the wrong reason.  A client that resets a
+    live stream is handled inside the stream handler, so it never reaches
+    `handle_error` and there was never anything to print.  The assertion was
+    true and empty.  Both halves are now pinned down separately: what the
+    resets actually do, and what `handle_error` does when it is reached.
+    """
+
+    def test_a_client_that_vanishes_leaves_the_server_serving(self, capfd):
         import socket as socketlib
         import struct
         import sys
 
         # SO_LINGER is `struct linger`, which is two ints on Unix and two
         # u_shorts on Windows.  Windows turned out to accept the eight-byte
-        # version anyway -- this test passed on a runner before the difference
-        # was handled -- so this is not fixing a failure.  It is declining to
-        # depend on an undocumented tolerance in the one place where being
-        # wrong would be silent: a rejected setsockopt means the socket closes
-        # politely, and a polite close is the one thing this test must not do.
+        # version anyway, so this is not fixing a failure -- it is declining to
+        # depend on an undocumented tolerance somewhere being wrong would be
+        # silent: a rejected setsockopt means a polite close, and a polite
+        # close is the one thing this must not do.
         linger = struct.pack("HH" if sys.platform == "win32" else "ii", 1, 0)
-        host, port = service.split(":")
-        for _ in range(3):
-            sock = socketlib.create_connection((host, int(port)), timeout=5)
-            sock.sendall(b"GET /v1/stream?voice=off HTTP/1.1\r\nHost: x\r\n"
-                         b"Upgrade: websocket\r\nConnection: Upgrade\r\n"
-                         b"Sec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==\r\n"
-                         b"Sec-WebSocket-Version: 13\r\n\r\n")
-            sock.recv(200)
-            sock.setsockopt(socketlib.SOL_SOCKET, socketlib.SO_LINGER, linger)
-            sock.close()                         # RST, not a clean close
-        time.sleep(0.4)
-        captured = capfd.readouterr()
-        assert "Traceback" not in captured.err, captured.err
+
+        # Its own server.  "Nothing was printed" is only worth asserting when
+        # nothing else could have printed; sharing the module's server made
+        # this fail about once in four full runs on a neighbour's output.
+        server = Server(("127.0.0.1", 0))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        port = server.server_address[1]
+        capfd.readouterr()
+        try:
+            for _ in range(3):
+                sock = socketlib.create_connection(("127.0.0.1", port), timeout=5)
+                sock.sendall(b"GET /v1/stream?voice=off HTTP/1.1\r\nHost: x\r\n"
+                             b"Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                             b"Sec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==\r\n"
+                             b"Sec-WebSocket-Version: 13\r\n\r\n")
+                sock.recv(200)
+                sock.setsockopt(socketlib.SOL_SOCKET, socketlib.SO_LINGER, linger)
+                sock.close()                     # RST, not a clean close
+            time.sleep(0.3)
+            # The positive half: it still works afterwards.
+            with WebSocketClient(f"ws://127.0.0.1:{port}/v1/stream?voice=off") as ok:
+                opcode, payload = ok.receive()
+                assert opcode == 0x1 and json.loads(payload)["ready"] is True
+                ok.send_binary(np.zeros(128, dtype="<f4").tobytes())
+                assert ok.receive()[0] == 0x2
+        finally:
+            server.shutdown()
+            server.server_close()
+        assert "Traceback" not in capfd.readouterr().err
+
+    def test_handle_error_counts_a_lost_connection_instead_of_printing(self, capfd):
+        """Reached when the socket dies while the handler is finishing with it,
+        which is where the tracebacks were actually coming from."""
+        server = Server(("127.0.0.1", 0))
+        try:
+            capfd.readouterr()
+            try:
+                raise ConnectionResetError(104, "Connection reset by peer")
+            except ConnectionResetError:
+                server.handle_error(None, ("127.0.0.1", 12345))
+            assert server.dropped == 1
+            assert "Traceback" not in capfd.readouterr().err
+        finally:
+            server.server_close()
+
+    def test_a_real_error_is_still_printed(self, capfd):
+        """The point is not to be quiet.  It is to be quiet about the one thing
+        that is not a problem, so that the log still means something."""
+        server = Server(("127.0.0.1", 0))
+        try:
+            capfd.readouterr()
+            try:
+                raise ValueError("something actually went wrong")
+            except ValueError:
+                server.handle_error(None, ("127.0.0.1", 12345))
+            assert server.dropped == 0
+            assert "something actually went wrong" in capfd.readouterr().err
+        finally:
+            server.server_close()
 
     def test_the_stream_survives_its_neighbours_vanishing(self, stream_url,
                                                           sample_rate):
