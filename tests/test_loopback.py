@@ -232,8 +232,10 @@ class TestMeasure:
 
     def test_what_is_left_over_is_what_nobody_reported(self):
         trip = loopback.measure(lambda sent: echo(sent, 4800), SR, attempts=1,
-                                reported_ms=10.0, engine_ms=60.0)
+                                granted_ms=10.0, claimed_ms=5.0, engine_ms=60.0)
         assert trip.measured_ms == pytest.approx(100.0, abs=0.05)
+        # Granted, not claimed: subtracting what PortAudio was asked for from
+        # what it delivered is subtracting the request from the delivery.
         assert trip.unexplained_ms == pytest.approx(30.0, abs=0.05)
 
     def test_hearing_nothing_at_all_says_what_to_check(self):
@@ -244,11 +246,98 @@ class TestMeasure:
 
     def test_the_summary_names_every_part_it_accounted_for(self):
         trip = loopback.measure(lambda sent: echo(sent, 4800), SR, attempts=3,
-                                reported_ms=10.0, engine_ms=60.0)
+                                granted_ms=10.0, claimed_ms=5.0, engine_ms=60.0)
         text = trip.summary()
         assert "round trip" in text and "100.0 ms" in text
         assert "engine" in text and "buffers" in text and "unexplained" in text
         assert "spread" in text
+        assert "granted" in text and "asked for 5.0" in text, \
+            "both numbers, and which one was subtracted"
+        assert "audio engine" in text, \
+            "the remainder is not a closed list and PortAudio discards the "\
+            "engine's own latency"
+
+    def test_a_stream_that_will_not_say_falls_back_and_labels_it(self):
+        trip = loopback.measure(lambda sent: echo(sent, 4800), SR, attempts=1,
+                                granted_ms=0.0, claimed_ms=5.0, engine_ms=60.0)
+        text = trip.summary()
+        assert "catalog" in text and "would not say" in text
+        # Nothing was granted, so nothing is subtracted for it.
+        assert trip.unexplained_ms == pytest.approx(40.0, abs=0.05)
+
+
+class CableStream:
+    """A sd.Stream that behaves like a loopback cable.
+
+    Drives the callback from its own thread with one cursor for both
+    directions, exactly as PortAudio does, and returns each output sample
+    ``delay`` samples later.  ``delay`` has to be at least one block: a device
+    that answered sooner would be returning audio it had not been given yet.
+    """
+
+    def __init__(self, delay=1000, granted=(0.004, 0.005), **kwargs):
+        import threading
+
+        self.kwargs = kwargs
+        self.delay = delay
+        self.latency = granted
+        self.block = int(kwargs.get("blocksize") or 256)
+        assert self.delay >= self.block
+        self.callback = kwargs["callback"]
+        self._stop = threading.Event()
+        self._thread = None
+        self.closed = False
+
+    def start(self):
+        import threading
+
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        played = np.zeros(0)
+        pos = 0
+        while not self._stop.is_set():
+            out = np.zeros((self.block, 1), dtype="float32")
+            heard = np.zeros((self.block, 1), dtype="float32")
+            lo = pos - self.delay
+            if lo >= 0:
+                take = played[lo:lo + self.block]
+                heard[:take.size, 0] = take
+            self.callback(heard, out, self.block, None, 0)
+            played = np.concatenate([played, out[:, 0].astype(np.float64)])
+            pos += self.block
+
+    def stop(self):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+
+    def close(self):
+        self.closed = True
+
+
+def cable(monkeypatch, delay=1000, granted=(0.004, 0.005), claimed=5.0):
+    """Point through_devices at a CableStream and record what it was asked."""
+    from natvox.app import backend as backend_module
+
+    seen = {}
+
+    class Fake:
+        @staticmethod
+        def Stream(**kwargs):                   # noqa: N802 - sounddevice's name
+            seen.update(kwargs)
+            seen["stream"] = CableStream(delay, granted, **kwargs)
+            return seen["stream"]
+
+    def claim(input_device, output_device, setting="low"):
+        seen["setting"] = setting
+        return claimed
+
+    monkeypatch.setattr(backend_module, "_sounddevice", lambda: Fake)
+    monkeypatch.setattr(backend_module, "rate_mismatch", lambda *a, **k: "")
+    monkeypatch.setattr(backend_module, "reported_latency_ms", claim)
+    return seen
 
 
 class TestWhatItAsksFor:
@@ -256,68 +345,59 @@ class TestWhatItAsksFor:
 
     Left to sounddevice's default the stream is opened at `high` latency --
     the setting meant for robust playback, not conversation -- and the
-    measurement then reports a path nobody would choose.  On a real Windows
-    machine that was 104 of the 109 ms measured through a virtual cable, and
-    it read as the cable being slow.
+    measurement then reports a path nobody would choose.
     """
 
-    def test_it_asks_for_low_and_subtracts_the_matching_claim(self, monkeypatch):
-        from natvox.app import backend as backend_module
-
-        asked, claimed = {}, {}
-
-        class Fake:
-            @staticmethod
-            def playrec(signal, **kwargs):
-                asked.update(kwargs)
-                sent = loopback.probe(SR)
-                out = np.zeros((signal.shape[0], 1))
-                out[1000:1000 + sent.size, 0] = sent
-                return out
-
-            @staticmethod
-            def wait():
-                pass
-
-        monkeypatch.setattr(backend_module, "_sounddevice", lambda: Fake)
-        monkeypatch.setattr(backend_module, "rate_mismatch",
-                            lambda *a, **k: "")
-        monkeypatch.setattr(
-            backend_module, "reported_latency_ms",
-            lambda i, o, setting="low": claimed.setdefault("setting", setting) and 0.0)
-
-        # warmup 0: this is about the latency argument, and a lead-in would
-        # put the fake's echo before the probe it is meant to be an echo of.
-        trip = loopback.through_devices(1, 2, attempts=1, warmup_seconds=0.0)
-        assert asked["latency"] == "low"
-        assert claimed["setting"] == "low", \
-            "the claim subtracted must describe the stream that was opened"
-        assert trip.measured_ms == pytest.approx(1000 / SR * 1000.0, abs=0.05)
+    def test_it_asks_for_low_and_measures_the_real_delay(self, monkeypatch):
+        seen = cable(monkeypatch, delay=1024)
+        trip = loopback.through_devices(1, 2, attempts=2, block_size=256)
+        assert seen["latency"] == "low"
+        assert seen["setting"] == "low", \
+            "the claim shown must describe the stream that was opened"
+        assert trip.measured_ms == pytest.approx(1024 / SR * 1000.0, abs=0.1)
 
     def test_the_setting_is_carried_through_verbatim(self, monkeypatch):
-        from natvox.app import backend as backend_module
-
-        asked, claimed = {}, {}
-
-        class Fake:
-            @staticmethod
-            def playrec(signal, **kwargs):
-                asked.update(kwargs)
-                return np.zeros((signal.shape[0], 1))
-
-            @staticmethod
-            def wait():
-                pass
-
-        monkeypatch.setattr(backend_module, "_sounddevice", lambda: Fake)
-        monkeypatch.setattr(backend_module, "rate_mismatch", lambda *a, **k: "")
-        monkeypatch.setattr(
-            backend_module, "reported_latency_ms",
-            lambda i, o, setting="low": claimed.setdefault("setting", setting) and 0.0)
-
+        seen = cable(monkeypatch)
         loopback.through_devices(1, 2, attempts=1, latency="high")
-        assert asked["latency"] == "high"
-        assert claimed["setting"] == "high"
+        assert seen["latency"] == "high"
+        assert seen["setting"] == "high"
+
+    def test_it_subtracts_what_portaudio_granted_not_what_it_asked_for(
+            self, monkeypatch):
+        """The defect this replaced.  sounddevice resolves latency="low" by
+        reading the same catalog key reported_latency_ms reads, so subtracting
+        that was subtracting the request from the delivery."""
+        seen = cable(monkeypatch, delay=4800, granted=(0.010, 0.012), claimed=5.0)
+        trip = loopback.through_devices(1, 2, attempts=1)
+        assert trip.granted_ms == pytest.approx(22.0)
+        assert trip.claimed_ms == pytest.approx(5.0)
+        assert trip.unexplained_ms == pytest.approx(100.0 - 22.0, abs=0.1)
+        assert "granted" in trip.summary() and "asked for 5.0" in trip.summary()
+
+    def test_a_stream_that_will_not_report_falls_back_rather_than_guessing(
+            self, monkeypatch):
+        seen = cable(monkeypatch, delay=4800, granted=None, claimed=5.0)
+        trip = loopback.through_devices(1, 2, attempts=1)
+        assert trip.granted_ms == 0.0
+        assert "would not say" in trip.summary()
+
+    def test_one_stream_serves_every_probe(self, monkeypatch):
+        """playrec opens and closes a stream per attempt, so every probe is
+        heard by a pipeline that has not settled -- and the stream is gone
+        before anyone can ask what latency it was given."""
+        seen = cable(monkeypatch, delay=1024)
+        trip = loopback.through_devices(1, 2, attempts=4)
+        assert trip.attempts == 4
+        assert trip.spread_ms == pytest.approx(0.0, abs=0.05), \
+            "one settled stream answers the same way every time"
+
+    def test_the_stream_is_closed_even_when_a_probe_fails(self, monkeypatch):
+        seen = cable(monkeypatch, delay=1024)
+        monkeypatch.setattr(loopback, "estimate_delay",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+        with pytest.raises(RuntimeError):
+            loopback.through_devices(1, 2, attempts=1)
+        assert seen["stream"].closed, "a held device is worse than a bad number"
 
 
 class TestThroughDevices:

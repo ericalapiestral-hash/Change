@@ -158,7 +158,20 @@ class RoundTrip:
     sample_rate: int
     block_size: int
     delays_ms: list[float]
-    reported_ms: float = 0.0
+    #: What PortAudio *granted*, read off the open stream.
+    #:
+    #: Not what it was asked for, and the difference is the whole point.
+    #: sounddevice resolves ``latency="low"`` by reading the device catalog's
+    #: ``default_low_*_latency`` and passing it as ``suggestedLatency``; the
+    #: same key is what :func:`natvox.app.backend.reported_latency_ms` reads.
+    #: Subtracting that from a measurement is subtracting the request from the
+    #: delivery, and PortAudio's own documentation says the two "may differ
+    #: significantly".  ``Pa_GetStreamInfo`` has the real figure and this is
+    #: it.
+    granted_ms: float = 0.0
+    #: What the device catalog claimed, i.e. what was asked for.  Kept only so
+    #: the summary can show both and say which one was subtracted.
+    claimed_ms: float = 0.0
     engine_ms: float = 0.0
     #: Anything found while setting the measurement up that changes how to
     #: read it -- a device running at a rate nobody asked for, say.  Part of
@@ -183,13 +196,20 @@ class RoundTrip:
 
     @property
     def unexplained_ms(self) -> float:
-        """Measured, minus what this program and the device buffers account for.
+        """Measured, minus what this program and PortAudio account for.
 
-        Whatever is left is the path between them: the system mixer, a virtual
-        cable, a resampler.  It is the number that decides whether replacing
-        the cable is worth anything.
+        What is left is everything neither of them can see.  That is not a
+        closed list and it is not all the cable: PortAudio's WASAPI backend
+        fetches the audio engine's own latency and then throws it away --
+        ``pa_win_wasapi.c`` reads ``IAudioClient::GetStreamLatency`` and the
+        line that would add it is commented out -- so the engine's path is
+        inside this remainder on every Windows machine, cable or no cable.
         """
-        return self.measured_ms - self.reported_ms - self.engine_ms
+        return self.measured_ms - self.granted_ms - self.engine_ms
+
+    @property
+    def granted_from(self) -> str:
+        return "PortAudio granted" if self.granted_ms else "claimed"
 
     @property
     def attempts(self) -> int:
@@ -209,11 +229,19 @@ class RoundTrip:
         ]
         if self.engine_ms:
             lines.append(f"  engine     {self.engine_ms:.1f} ms")
-        if self.reported_ms:
-            lines.append(f"  buffers    {self.reported_ms:.1f} ms (what the driver claims)")
-        if self.engine_ms or self.reported_ms:
-            lines.append(f"  unexplained {self.unexplained_ms:.1f} ms -- the system mixer, "
-                         f"a virtual cable, or a resampler")
+        if self.granted_ms:
+            asked = (f"; it was asked for {self.claimed_ms:.1f}"
+                     if self.claimed_ms else "")
+            lines.append(f"  buffers    {self.granted_ms:.1f} ms "
+                         f"(PortAudio granted{asked})")
+        elif self.claimed_ms:
+            lines.append(f"  buffers    {self.claimed_ms:.1f} ms (the device "
+                         f"catalog's claim; the stream would not say)")
+        if self.engine_ms or self.granted_ms or self.claimed_ms:
+            lines.append(f"  unexplained {self.unexplained_ms:.1f} ms -- what neither "
+                         f"this program nor\n              PortAudio accounts for: "
+                         f"the Windows audio engine (PortAudio\n              fetches "
+                         f"its latency and discards it), a virtual cable, a resampler")
         if self.note:
             lines.append(self.note)
         return "\n".join(lines)
@@ -221,7 +249,8 @@ class RoundTrip:
 
 def measure(play_and_record, sample_rate: int, block_size: int = 256,
             attempts: int = 5, tail_seconds: float = 0.5,
-            reported_ms: float = 0.0, engine_ms: float = 0.0,
+            granted_ms: float = 0.0, claimed_ms: float = 0.0,
+            engine_ms: float = 0.0,
             note: str = "", warmup_seconds: float = WARMUP_SECONDS) -> RoundTrip:
     """Send the probe ``attempts`` times and time each echo.
 
@@ -249,7 +278,8 @@ def measure(play_and_record, sample_rate: int, block_size: int = 256,
         # negative round trip into the median.
         if delay >= 0.0:
             delays.append(delay * 1000.0)
-    return RoundTrip(sample_rate, block_size, delays, reported_ms, engine_ms, note)
+    return RoundTrip(sample_rate, block_size, delays, granted_ms, claimed_ms,
+                     engine_ms, note)
 
 
 def through_devices(input_device=None, output_device=None, sample_rate: int = 48000,
@@ -262,11 +292,20 @@ def through_devices(input_device=None, output_device=None, sample_rate: int = 48
     output and its recording end as the input, which is exactly the path the
     voice takes on its way to another program.
 
+    One stream, opened once and held across every probe.  ``sounddevice.playrec``
+    would have been shorter and opens and closes a fresh stream per call, which
+    costs two things: every probe is then heard by a pipeline that has not
+    settled, and the stream is gone before anyone can ask what latency it was
+    actually given.  That second one matters more -- it is the difference
+    between subtracting what PortAudio delivered and subtracting what it was
+    asked for.
+
     ``latency`` is passed to PortAudio and is not optional in practice: left
     out, sounddevice asks for ``"high"``, and the measurement then reports a
-    path nobody would choose to use.  Run it both ways on one machine and the
-    difference is the cost of not choosing.
+    path nobody would choose to use.
     """
+    import time
+
     from .backend import (AudioUnavailable, _sounddevice, exclusive_settings,
                           rate_mismatch, reported_latency_ms)
 
@@ -274,28 +313,86 @@ def through_devices(input_device=None, output_device=None, sample_rate: int = 48
     settings = (exclusive_settings(input_device, output_device)
                 if exclusive else None)
 
-    def play_and_record(signal: np.ndarray) -> np.ndarray:
-        recorded = sd.playrec(
-            signal.astype("float32").reshape(-1, 1),
-            samplerate=sample_rate,
-            blocksize=block_size,
-            channels=1,
-            device=(input_device, output_device),
-            dtype="float32",
-            extra_settings=settings,
-            latency=latency,
-        )
-        sd.wait()
-        return np.asarray(recorded, dtype=np.float64).reshape(-1)
+    # Written by the main thread between probes, read by the audio thread
+    # during one.  Never both at once: the main thread parks `data` at None
+    # (which makes the callback output silence and touch nothing else), sets
+    # the rest up, and only then hands the signal over.
+    state = {"data": None, "out": None, "frame": 0, "warnings": 0}
+
+    def callback(indata, outdata, frames, time_info, status):
+        if status:
+            state["warnings"] += 1
+        data = state["data"]
+        if data is None:
+            outdata.fill(0.0)
+            return
+        out, i = state["out"], state["frame"]
+        n = max(0, min(frames, data.size - i))
+        if n:
+            # One cursor for both directions, so outdata[k] and out[k] are the
+            # same callback and the delay recovered later is a real loop delay
+            # rather than an artefact of when recording started.
+            outdata[:n, 0] = data[i:i + n]
+            out[i:i + n] = indata[:n, 0]
+        if n < frames:
+            outdata[n:].fill(0.0)
+        state["frame"] = i + frames
 
     try:
-        return measure(play_and_record, sample_rate, block_size, attempts,
-                       reported_ms=reported_latency_ms(input_device, output_device,
-                                                      setting=latency),
-                       engine_ms=engine_ms, warmup_seconds=warmup_seconds,
-                       note=rate_mismatch(input_device, output_device, sample_rate))
+        stream = sd.Stream(
+            samplerate=sample_rate, blocksize=block_size, channels=(1, 1),
+            device=(input_device, output_device), dtype="float32",
+            extra_settings=settings, latency=latency, callback=callback,
+        )
+        stream.start()
+    except AudioUnavailable:
+        raise
     except Exception as exc:                    # noqa: BLE001 - as LiveBackend
         # PortAudio reports a missing device, a rate the pair cannot agree on
         # and a device already held by something else as the same exception
         # type with a different string.  The string is the useful part.
         raise AudioUnavailable(f"could not open those devices: {exc}") from exc
+
+    try:
+        granted = _granted_ms(stream)
+
+        def play_and_record(signal: np.ndarray) -> np.ndarray:
+            state["data"] = None                # the callback goes quiet
+            state["out"] = np.zeros(signal.size)
+            state["frame"] = 0
+            state["data"] = np.ascontiguousarray(signal, dtype=np.float64)
+            deadline = time.monotonic() + 3.0 * signal.size / sample_rate + 2.0
+            while state["frame"] < signal.size:
+                if time.monotonic() > deadline:
+                    raise AudioUnavailable(
+                        "the stream stopped feeding us; the device was "
+                        "probably taken away mid-measurement")
+                time.sleep(0.005)
+            state["data"] = None
+            return state["out"].copy()
+
+        return measure(play_and_record, sample_rate, block_size, attempts,
+                       granted_ms=granted,
+                       claimed_ms=reported_latency_ms(input_device, output_device,
+                                                      setting=latency),
+                       engine_ms=engine_ms, warmup_seconds=warmup_seconds,
+                       note=rate_mismatch(input_device, output_device, sample_rate))
+    finally:
+        try:
+            stream.stop()
+        finally:
+            stream.close()
+
+
+def _granted_ms(stream) -> float:
+    """What PortAudio says it actually gave, in and out, or 0.0.
+
+    Zero rather than a guess when it will not say, because the summary can
+    then fall back to the catalog's claim and *label* it as a fallback.  A
+    silent substitution here is how the request came to be printed as though
+    it were the delivery in the first place.
+    """
+    try:
+        return 1000.0 * float(sum(stream.latency))
+    except (TypeError, ValueError, AttributeError):
+        return 0.0
