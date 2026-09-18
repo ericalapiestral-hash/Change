@@ -671,6 +671,9 @@ class Session:
         if self._pending is None:
             self._delay.process(self._engine.process(x), wet)
         else:
+            # The lock covers the swap and nothing else: it is held for a few
+            # assignments, never across a build, so the audio thread never
+            # waits on engine construction.
             with self._swap_lock:
                 pending = self._pending
                 install = pending is not None and not self._fading
@@ -679,9 +682,11 @@ class Session:
                     self._engine, self._delay = pending
                     self._pending = None
                     self._fade_pos = 0
-                if install:
-                    # The fade starts here, so the result is a blend after all.
-                    wet = self._scratch_for(0, n)
+            if install:
+                # The fade starts here, so the result is a blend after all and
+                # the engine's output cannot go straight into the caller's
+                # buffer.  Outside the lock: growing a scratch buffer allocates.
+                wet = self._scratch_for(0, n)
             if pending is None or install:
                 self._delay.process(self._engine.process(x), wet)
             else:
