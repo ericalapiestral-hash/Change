@@ -22,12 +22,22 @@ Or as a desktop program, which is the same engine with a window on it:
 pip install -e '.[app]'
 natvox app                 # pick a microphone, pick a voice, hold space to A/B
 natvox app --check         # first: can this computer keep up?
+natvox app --tune          # then: the presets are a guess about YOUR voice
+natvox app --ladder        # and: pick the pitch by ear, not by slider
 ```
 
+**Start with `--tune`.** A preset is a fixed interval, not a destination:
++7 semitones lands a 95 Hz speaker at 142 Hz and a 145 Hz speaker at 217 Hz,
+and only one of those is a woman's pitch. It measures instead — see
+[Fit it to the speaker](#fit-it-to-the-speaker).
+
 A Windows build comes out of `.github/workflows/build.yml` — it runs the tests
-on Windows, builds, and then runs what it built, because PyInstaller reports
-success for bundles that never open a window. `packaging/` has the recipe and
-explains the virtual audio cable that gets it into a game or a call.
+on Windows, builds, then runs what it built (PyInstaller reports success for
+bundles that never open a window) and finally installs a real update onto a
+throwaway copy of itself, because that was the half nothing ran. `packaging/`
+has the recipe, and [Getting the voice into another
+program](#getting-the-voice-into-another-program) covers the virtual audio
+cable that carries it into a game or a call.
 
 Or run it live in a browser, with an interface built for judging whether it
 sounds converted - instant A/B against a delay-matched dry signal, a loop
