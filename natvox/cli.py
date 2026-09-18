@@ -168,6 +168,7 @@ def cmd_devices(args) -> int:
 
 
 def cmd_live(args) -> int:
+    from .app.backend import AudioUnavailable, exclusive_settings, rate_mismatch
     from .realtime import RealtimeSession, StreamProcessor
 
     profile = _profile_from_args(args)
@@ -176,13 +177,11 @@ def cmd_live(args) -> int:
     processor = StreamProcessor(changer, channels=args.channels, dry_wet=args.dry_wet)
     input_device = _device_arg(args.input_device)
     output_device = _device_arg(args.output_device)
-    from .app.backend import rate_mismatch
     mismatch = rate_mismatch(input_device, output_device, args.rate)
     if mismatch:
         print(f"note: {mismatch}", file=sys.stderr)
     extra = None
     if args.exclusive:
-        from .app.backend import AudioUnavailable, exclusive_settings
         try:
             extra = exclusive_settings(input_device, output_device)
         except AudioUnavailable as exc:
