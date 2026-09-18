@@ -207,16 +207,23 @@ class TestServerManners:
         port = server.server_address[1]
         capfd.readouterr()
         try:
-            for _ in range(3):
+            # Half of them read the upgrade first, half vanish before the
+            # server has written a byte.  The second half is the one that
+            # mattered: the greeting used to be sent outside the handler's
+            # guard, so a client gone by then printed a stack trace -- which
+            # only showed up on Windows, where the reset lands while the write
+            # is still in flight.
+            for read_first in (True, False, True, False, False):
                 sock = socketlib.create_connection(("127.0.0.1", port), timeout=5)
                 sock.sendall(b"GET /v1/stream?voice=off HTTP/1.1\r\nHost: x\r\n"
                              b"Upgrade: websocket\r\nConnection: Upgrade\r\n"
                              b"Sec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==\r\n"
                              b"Sec-WebSocket-Version: 13\r\n\r\n")
-                sock.recv(200)
+                if read_first:
+                    sock.recv(200)
                 sock.setsockopt(socketlib.SOL_SOCKET, socketlib.SO_LINGER, linger)
                 sock.close()                     # RST, not a clean close
-            time.sleep(0.3)
+            time.sleep(0.5)
             # The positive half: it still works afterwards.
             with WebSocketClient(f"ws://127.0.0.1:{port}/v1/stream?voice=off") as ok:
                 opcode, payload = ok.receive()

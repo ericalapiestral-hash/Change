@@ -407,14 +407,20 @@ class Handler(BaseHTTPRequestHandler):
         # A client that opens a stream and stops speaking otherwise holds a
         # thread and an engine until the process ends.
         self.connection.settimeout(IDLE_TIMEOUT_SECONDS)
-        ws.send_json({
-            "ready": True, "voice": session.voice.name, "rate": rate,
-            "latency_ms": round(session.latency_ms, 2),
-            "latency_samples": session.latency_samples,
-            "format": "float32le mono",
-            "settings": session.settings(),
-        })
         try:
+            # Inside the guard, not before it.  A client can be gone between
+            # the upgrade and this first write -- opening a stream and
+            # immediately going away is the most ordinary thing a client does
+            # -- and sending the greeting outside the guard meant that printed
+            # a stack trace.  It only reproduced on Windows, where the reset
+            # arrives while the write is still in flight.
+            ws.send_json({
+                "ready": True, "voice": session.voice.name, "rate": rate,
+                "latency_ms": round(session.latency_ms, 2),
+                "latency_samples": session.latency_samples,
+                "format": "float32le mono",
+                "settings": session.settings(),
+            })
             self._pump(ws, session)
         except (WebSocketError, OSError):
             pass
