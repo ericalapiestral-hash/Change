@@ -103,7 +103,7 @@ describe('WindowScratch', () => {
   test('generates a periodic Hann that overlap-adds to unity at 50%', () => {
     const scratch = new WindowScratch(4096);
     const n = 576, hop = n / 2;
-    const w = Float64Array.from(scratch.hann(n));
+    const w = Float64Array.from(scratch.hann(n).subarray(0, n));
     for (let i = 0; i < hop; i++) {
       assert.ok(Math.abs(w[i] + w[i + hop] - 1) < 1e-12, `sum at ${i}`);
     }

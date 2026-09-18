@@ -20,7 +20,14 @@ export class WindowScratch {
     this.length = 0;
   }
 
-  /** Fill with a periodic Hann of `n` samples and return a view of it. */
+  /**
+   * Fill with a periodic Hann of `n` samples and return the backing buffer.
+   *
+   * The buffer, not a view of it: `subarray` allocates a fresh view object on
+   * every call, and at a few hundred grains a second that is the last
+   * allocation left on the audio path. Callers already carry the length, so
+   * they read `buffer[0..n)` and ignore the rest.
+   */
   hann(n) {
     if (n > this.buffer.length) {
       // Only reachable if the caller's bound was wrong; grow rather than
@@ -31,6 +38,6 @@ export class WindowScratch {
     const k = (2 * Math.PI) / n;
     for (let i = 0; i < n; i++) w[i] = 0.5 - 0.5 * Math.cos(k * i);
     this.length = n;
-    return w.subarray(0, n);
+    return w;
   }
 }
