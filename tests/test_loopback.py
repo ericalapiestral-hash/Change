@@ -199,6 +199,73 @@ class TestMeasure:
         assert "spread" in text
 
 
+class TestWhatItAsksFor:
+    """`through_devices` opens the stream, so it decides what is measured.
+
+    Left to sounddevice's default the stream is opened at `high` latency --
+    the setting meant for robust playback, not conversation -- and the
+    measurement then reports a path nobody would choose.  On a real Windows
+    machine that was 104 of the 109 ms measured through a virtual cable, and
+    it read as the cable being slow.
+    """
+
+    def test_it_asks_for_low_and_subtracts_the_matching_claim(self, monkeypatch):
+        from natvox.app import backend as backend_module
+
+        asked, claimed = {}, {}
+
+        class Fake:
+            @staticmethod
+            def playrec(signal, **kwargs):
+                asked.update(kwargs)
+                sent = loopback.probe(SR)
+                out = np.zeros((signal.shape[0], 1))
+                out[1000:1000 + sent.size, 0] = sent
+                return out
+
+            @staticmethod
+            def wait():
+                pass
+
+        monkeypatch.setattr(backend_module, "_sounddevice", lambda: Fake)
+        monkeypatch.setattr(backend_module, "rate_mismatch",
+                            lambda *a, **k: "")
+        monkeypatch.setattr(
+            backend_module, "reported_latency_ms",
+            lambda i, o, setting="low": claimed.setdefault("setting", setting) and 0.0)
+
+        trip = loopback.through_devices(1, 2, attempts=1)
+        assert asked["latency"] == "low"
+        assert claimed["setting"] == "low", \
+            "the claim subtracted must describe the stream that was opened"
+        assert trip.measured_ms == pytest.approx(1000 / SR * 1000.0, abs=0.05)
+
+    def test_the_setting_is_carried_through_verbatim(self, monkeypatch):
+        from natvox.app import backend as backend_module
+
+        asked, claimed = {}, {}
+
+        class Fake:
+            @staticmethod
+            def playrec(signal, **kwargs):
+                asked.update(kwargs)
+                return np.zeros((signal.shape[0], 1))
+
+            @staticmethod
+            def wait():
+                pass
+
+        monkeypatch.setattr(backend_module, "_sounddevice", lambda: Fake)
+        monkeypatch.setattr(backend_module, "rate_mismatch", lambda *a, **k: "")
+        monkeypatch.setattr(
+            backend_module, "reported_latency_ms",
+            lambda i, o, setting="low": claimed.setdefault("setting", setting) and 0.0)
+
+        loopback.through_devices(1, 2, attempts=1, latency="high")
+        assert asked["latency"] == "high"
+        assert claimed["setting"] == "high"
+
+
 class TestThroughDevices:
     def test_a_device_that_will_not_open_is_a_sentence_not_a_traceback(self):
         """There is no sound card here, so this is the real failure path.

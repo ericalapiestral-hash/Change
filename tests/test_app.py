@@ -23,7 +23,7 @@ from natvox.app.backend import (AudioUnavailable, Device, LiveBackend,
                                 host_api_of, list_devices,
                                 rate_mismatch, reported_latency_ms)
 from natvox.app.core import MachineReport, Settings, Studio
-from natvox.realtime import StreamProcessor
+from natvox.realtime import RealtimeSession, StreamProcessor
 
 
 @pytest.fixture
@@ -206,6 +206,12 @@ class FakeSoundDevice:
 
 
 def fake_device(name, api_index, **extra):
+    """A device as PortAudio describes one.
+
+    The high figures are 30x the low ones, which is the kind of ratio a real
+    WASAPI endpoint shows -- and the reason a stream opened without an explicit
+    `latency` argument is a different stream entirely.
+    """
     info = {
         "name": name, "hostapi": api_index,
         "max_input_channels": 2, "max_output_channels": 2,
@@ -214,6 +220,10 @@ def fake_device(name, api_index, **extra):
         "default_low_output_latency": 0.01,
     }
     info.update(extra)
+    info.setdefault("default_high_input_latency",
+                    info["default_low_input_latency"] * 30.0)
+    info.setdefault("default_high_output_latency",
+                    info["default_low_output_latency"] * 30.0)
     return info
 
 
@@ -328,6 +338,114 @@ class TestRateMismatch:
         trip = RoundTrip(48000, 256, [12.0], note="the cable is at 44100 Hz")
         assert "44100" in trip.summary()
         assert "44100" in RoundTrip(48000, 256, [], note="the cable is at 44100 Hz").summary()
+
+
+class TestWhatWeAskPortaudioFor:
+    """The argument whose absence cost 104 ms on a real machine.
+
+    sounddevice's own default is ``latency=('high', 'high')``, which resolves
+    to the device's ``default_high_*_latency`` -- the figure meant for robust
+    non-interactive playback.  Every stream this package opened was opened at
+    that setting, while every number it printed came from
+    ``default_low_*_latency``.  The accounting described a stream that had
+    never been opened, and the remainder read as the virtual cable being slow.
+    """
+
+    def test_no_stream_is_ever_opened_without_asking(self):
+        """The test that makes it unrepeatable.
+
+        A call site that leaves `latency` out does not fail, does not warn and
+        does not look wrong; it just quietly opens the slow stream.  So the
+        rule is enforced on the source rather than on behaviour.
+        """
+        import re
+
+        root = Path(__file__).resolve().parents[1] / "natvox"
+        offenders = []
+        for path in root.rglob("*.py"):
+            text = path.read_text()
+            for match in re.finditer(r"\bsd\.(Stream|RawStream|playrec|rec|play)\s*\(",
+                                     text):
+                line = text.count("\n", 0, match.start()) + 1
+                # The call's arguments run to the matching close paren.
+                depth, i = 0, match.end() - 1
+                while i < len(text):
+                    if text[i] == "(":
+                        depth += 1
+                    elif text[i] == ")":
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    i += 1
+                if "latency" not in text[match.end():i]:
+                    offenders.append(f"{path.relative_to(root)}:{line}")
+        assert not offenders, (
+            "these open a PortAudio stream without saying what latency they "
+            "want, so they get sounddevice's default of 'high': "
+            + ", ".join(offenders))
+
+    def test_the_session_asks_for_low_by_default(self, windows_devices, monkeypatch):
+        opened = {}
+
+        class Stream:
+            def __init__(self, **kwargs):
+                opened.update(kwargs)
+                self.latency = (0.004, 0.005)
+
+            def start(self):
+                pass
+
+        fake = windows_devices
+        monkeypatch.setattr(fake, "Stream", Stream, raising=False)
+        monkeypatch.setitem(__import__("sys").modules, "sounddevice", fake)
+        session = RealtimeSession(StreamProcessor(api.Session(48000, "off")), 2, 2)
+        session.start()
+        assert opened["latency"] == "low"
+
+    def test_the_delay_comes_from_the_open_stream_not_a_formula(self, monkeypatch):
+        """PortAudio treats the requested latency as a suggestion, so the only
+        honest source for what it cost is the stream itself."""
+        session = RealtimeSession(StreamProcessor(api.Session(48000, "off")),
+                                  block_size=256)
+        assert session.device_latency_ms == pytest.approx(10.67, abs=0.1)
+
+        class Stream:
+            latency = (0.004, 0.005)
+
+        session._stream = Stream()
+        assert session.device_latency_ms == pytest.approx(9.0)
+
+    def test_a_backend_hands_its_choice_to_the_session(self, windows_devices,
+                                                       monkeypatch):
+        made = {}
+
+        class Session:
+            def __init__(self, *args, **kwargs):
+                made.update(kwargs)
+
+            def start(self):
+                pass
+
+        monkeypatch.setattr(backend_module, "RealtimeSession", Session)
+        LiveBackend(2, 2, 256, latency="high").start(None)
+        assert made["latency"] == "high"
+
+    def test_the_claim_subtracted_matches_the_setting_asked_for(self,
+                                                               windows_devices):
+        """Subtracting the 'low' claim from a stream opened at 'high' is not a
+        small error -- it was the entire unexplained remainder."""
+        assert reported_latency_ms(2, 2, setting="low") == pytest.approx(6.0)
+        assert reported_latency_ms(2, 2, setting="high") == pytest.approx(180.0)
+
+    def test_an_explicit_time_in_seconds_claims_nothing(self, windows_devices):
+        """PortAudio also takes a number.  There is then no table entry to
+        quote, and inventing one would be worse than leaving it unexplained."""
+        assert reported_latency_ms(2, 2, setting=0.01) == 0.0
+
+    def test_the_listing_shows_both_so_the_gap_is_visible(self, windows_devices):
+        best = list_devices()[0]
+        assert best.claimed_ms == pytest.approx(2.0)
+        assert best.relaxed_ms == pytest.approx(60.0)
 
 
 class TestExclusiveMode:

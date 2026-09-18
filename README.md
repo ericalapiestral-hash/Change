@@ -155,12 +155,23 @@ Other properties the test suite pins down:
 ## Latency
 
 ```
-engine (below) + device buffer (2 × blocksize) + the path out = what you hear
+engine (below) + device buffer + the path out = what you hear
 ```
 
-The first term is the only one this table is about. The last one — host API,
-system mixer, virtual cable — is often larger than either, is chosen rather
-than computed, and is measured by `natvox-cli --loopback`; see
+The first term is the only one this table is about. The other two are chosen
+rather than computed, and both defaults are traps:
+
+**The device buffer is what you ask PortAudio for**, and sounddevice's default
+if you do not ask is `latency='high'` — the device's `default_high_*_latency`,
+meant for robust non-interactive playback. On one measured Windows machine the
+`high` and `low` figures for the same endpoint differed by more than an order
+of magnitude. natvox now always asks for `low`, explicitly, and a test
+([`tests/test_app.py`](tests/test_app.py)) fails if any call site ever opens a
+stream without saying. `natvox devices` prints both columns so the gap is
+visible, and `--loopback --latency high` measures it.
+
+**The path out** — host API, system mixer, virtual cable — is measured by
+`natvox-cli --loopback`; see
 [Getting the voice into another program](#getting-the-voice-into-another-program).
 
 Engine latency is set by pitch, not by CPU: PSOLA needs about two periods of
@@ -332,7 +343,7 @@ engine + device buffers + host API + mixer + whatever carries it across
 ```
 
 Everything after the first term is chosen rather than computed, and on Windows
-the defaults are the worst available. Three levers, in the order they are worth
+the defaults are the worst available. Four levers, in the order they are worth
 pulling:
 
 **1. Pick the right copy of the device.** PortAudio offers the same microphone
@@ -375,7 +386,15 @@ accurate to a fraction of a sample, and it returns "nothing came back" rather
 than a number when nothing did — silence, white noise, a tone and speech-shaped
 noise are all refused, because a confident wrong number is worse than none.
 
-**3. Match the sample rates.** A device set to a different rate than the
+**3. Ask for the latency you want.** natvox does this for you now, and the
+reason it is on this list is that it did not always. sounddevice opens a stream
+at `latency='high'` unless told otherwise, and natvox was reporting the `low`
+figure in three separate places — the `claims` column, the buffers subtracted
+from a round trip, and the device-buffer estimate. The accounting described a
+stream that had never been opened. See
+[What this cost, measured](#what-this-cost-measured) below.
+
+**4. Match the sample rates.** A device set to a different rate than the
 stream does not refuse — the audio engine quietly inserts a resampler, which
 costs delay and a little quality and says nothing anywhere. It is the usual
 reason a virtual cable measures worse than it should, because cables commonly
@@ -383,11 +402,44 @@ ship at 44100 while everything else here runs at 48000. Both `--loopback` and
 `live` name any end that disagrees, and it is fixed in that device's own
 properties in about ten seconds.
 
-**No numbers are quoted here because none were measured.** This environment has
-no audio hardware. The estimator is verified against signals delayed by an
-exact known number of samples (`tests/test_loopback.py`); the device path above
-it has never been run against a real device. Measure your own machine before
-believing anything about your own machine — which is the point of it.
+**Almost no numbers are quoted here, because almost none were measured.** This
+environment has no audio hardware; the estimator is verified against signals
+delayed by an exact known number of samples (`tests/test_loopback.py`). The one
+real-hardware measurement there is appears below, and it is quoted for what it
+found in *this repository* rather than as a figure for anyone else's machine.
+Measure your own — which is the point of it.
+
+### What this cost, measured
+
+A user looped a VB-CABLE 4.5 back on itself — its playback end as the output,
+its recording end as the input, both the WASAPI copies, both at 48000 Hz, a
+purely digital path with no microphone and no air — and measured:
+
+```
+round trip   109.4 ms (spread 2.8 ms over 5 tries)
+  buffers    5.0 ms (what the driver claims)
+  unexplained 104.4 ms
+```
+
+The obvious reading is that the cable costs 104 ms. It was wrong twice over.
+
+First they turned the cable's own `Max Latency` down, 7168 → 2048 → 1024, and
+the number did not move: 109.4, 116.2, 110.4 ms. **2048 measured slower than
+7168.** A knob that does not order its own outputs is not the cause of
+anything; at 512 the path simply broke. So the cable's buffering was not it.
+
+What it was: `natvox` opened that stream without passing `latency`, so
+PortAudio was asked for `default_high_*_latency` on both ends — while the 5.0 ms
+subtracted came from `default_low_*_latency`. **The unexplained remainder was
+the difference between the stream that was opened and the stream that was
+described, and it was in this repository, not in the cable.**
+
+The measurement itself was sound. `sd.playrec`'s callback fills `outdata` and
+reads `indata` under one frame counter, so the two arrays are aligned by
+construction and the delay recovered is the true loop delay — it was faithfully
+reporting a badly-opened stream. Which is the general lesson: a measurement can
+be correct and still be read wrong, and the first thing to suspect when a
+number blames somebody else's component is your own parameters.
 
 ### Should we write our own virtual cable?
 
@@ -395,8 +447,9 @@ Measure first — and on most setups the answer will be no. A virtual cable is a
 memcpy between two buffers; it has no reason to cost anything. What costs is
 the buffering around it, and existing cables expose that as a setting. If
 `--loopback` says the unexplained part is a millisecond or two, there is
-nothing there to win. And before blaming the cable for a large one, check lever
-3: a resampler nobody asked for looks exactly like a slow cable.
+nothing there to win. And before blaming the cable for a large one, check levers
+3 and 4 — a stream opened at the wrong latency setting, or a resampler nobody
+asked for, both look exactly like a slow cable. One of them already did.
 
 If the number survives all three levers, here is what the alternative actually
 involves:
@@ -469,7 +522,7 @@ reconstructs to −322 dB. It has **not** been run against a real checkpoint.
 
 ```bash
 pip install -e '.[dev]'
-pytest                      # 570 tests
+pytest                      # 582 tests
 python tools/bench.py       # artifact measurements
 
 cd web && npm install && npm test     # 127 more, including the live path
@@ -549,7 +602,7 @@ off" is a statement that can be checked rather than an impression.
   quality.
 - **64-frame blocks are marginal** for the heaviest preset in the Python
   engine: the worst block reaches 92% of its deadline. Use 128 or more.
-- **No audio hardware was available here.** The browser build is tested end to
+- **Almost no audio hardware was available here.** The browser build is tested end to
   end through the real AudioWorklet, but on an offline render rather than a
   live device; the Python `sounddevice` binding is untested against real
   hardware because this environment has no PortAudio. The same applies to
@@ -557,7 +610,9 @@ off" is a statement that can be checked rather than an impression.
   host-API ordering against a stand-in for what Windows reports, and neither
   has ever met a device. **No claim is made here about what any host API,
   mixer or virtual cable actually costs** — the tool exists precisely because
-  that has to be measured where it runs.
+  that has to be measured where it runs. One real Windows measurement has come
+  back, and what it found was a defect in this package rather than a figure for
+  anything else: see [What this cost, measured](#what-this-cost-measured).
 - **Real speech has not been tested** — only synthesised reference signals,
   which is what makes the measurements meaningful but is not the same thing.
   Run `tools/bench.py` against your own recordings before trusting the numbers

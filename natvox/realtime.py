@@ -155,20 +155,48 @@ class RealtimeSession:
 
     def __init__(self, processor: StreamProcessor, input_device=None,
                  output_device=None, block_size: int = 256,
-                 extra_settings=None) -> None:
+                 extra_settings=None, latency="low") -> None:
         self.processor = processor
         self.input_device = input_device
         self.output_device = output_device
         self.block_size = int(block_size)
         #: Host-API specific settings, e.g. ``sounddevice.WasapiSettings``.
         self.extra_settings = extra_settings
+        #: Latency to ask PortAudio for: ``"low"``, ``"high"``, or seconds.
+        #:
+        #: Passed explicitly because sounddevice's own default is ``"high"``
+        #: (``sounddevice._default_latency = 'high', 'high'``), which resolves
+        #: to the device's ``default_high_*_latency`` -- the figure meant for
+        #: robust non-interactive playback, not for talking to somebody.  A
+        #: stream opened without this argument is opened at that setting, and
+        #: nothing anywhere says so: every latency number this package
+        #: reported came from ``default_low_*_latency`` instead, describing a
+        #: stream that had never been opened.
+        self.latency = latency
         self._stream = None
+
+    @property
+    def device_latency_ms(self) -> float:
+        """What the device buffers add, in and out.
+
+        Taken from the open stream, because PortAudio treats the requested
+        latency as a suggestion and is free to give something else.  Before
+        the stream exists there is nothing to read, so the block size stands
+        in -- an estimate, and labelled as one by being replaced the moment
+        there is a measurement.
+        """
+        stream = self._stream
+        if stream is not None:
+            try:
+                return 1000.0 * float(sum(stream.latency))
+            except (TypeError, ValueError):     # not a pair; PortAudio is odd
+                pass
+        return 2000.0 * self.block_size / self.processor.sample_rate
 
     @property
     def total_latency_ms(self) -> float:
         """Engine delay plus the device buffer, which is what a user hears."""
-        device = 2000.0 * self.block_size / self.processor.sample_rate
-        return self.processor.latency_ms + device
+        return self.processor.latency_ms + self.device_latency_ms
 
     def _callback(self, indata, outdata, frames, time_info, status):
         if status:
@@ -185,6 +213,7 @@ class RealtimeSession:
             channels=(1, self.processor.channels),
             device=(self.input_device, self.output_device),
             extra_settings=self.extra_settings,
+            latency=self.latency,
             callback=self._callback,
         )
         self._stream.start()

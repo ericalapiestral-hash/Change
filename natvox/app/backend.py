@@ -72,6 +72,13 @@ class Device:
     #: driver and this program.  `natvox.app.loopback` measures the truth.
     low_input_ms: float = 0.0
     low_output_ms: float = 0.0
+    #: The same claim for PortAudio's other setting, the one meant for robust
+    #: non-interactive playback.  Carried because it is what a stream opened
+    #: without an explicit ``latency`` argument actually gets -- sounddevice
+    #: defaults to ``"high"`` -- so the gap between the two columns is the
+    #: delay a program pays for not choosing.
+    high_input_ms: float = 0.0
+    high_output_ms: float = 0.0
 
     @property
     def rank(self) -> int:
@@ -81,6 +88,11 @@ class Device:
     def claimed_ms(self) -> float:
         """Whichever direction this device is usable in."""
         return self.low_input_ms if self.inputs else self.low_output_ms
+
+    @property
+    def relaxed_ms(self) -> float:
+        """The same, at PortAudio's ``"high"`` setting."""
+        return self.high_input_ms if self.inputs else self.high_output_ms
 
     @property
     def label(self) -> str:
@@ -128,6 +140,8 @@ def list_devices(sort: bool = True) -> list[Device]:
             float(info["default_samplerate"]),
             1000.0 * float(info.get("default_low_input_latency") or 0.0),
             1000.0 * float(info.get("default_low_output_latency") or 0.0),
+            1000.0 * float(info.get("default_high_input_latency") or 0.0),
+            1000.0 * float(info.get("default_high_output_latency") or 0.0),
         ))
     if sort:
         out.sort(key=lambda d: (d.rank, d.claimed_ms, d.name))
@@ -210,13 +224,21 @@ def rate_mismatch(input_device=None, output_device=None, rate: int = 48000) -> s
             f"Match them in the device's properties, or pass --rate.")
 
 
-def reported_latency_ms(input_device=None, output_device=None) -> float:
+def reported_latency_ms(input_device=None, output_device=None,
+                        setting: str = "low") -> float:
     """What the two drivers claim their buffers cost, together.
 
-    Best effort on purpose: this number exists to be subtracted from a measured
-    round trip, and a device that will not answer should leave the remainder
-    unexplained rather than stop the measurement.
+    ``setting`` picks which claim, and it has to match the one the stream was
+    actually opened with.  Subtracting the ``"low"`` figure from a round trip
+    measured on a ``"high"`` stream is not a small error: it was the whole
+    unexplained remainder, and it read as the virtual cable being slow.
+
+    Best effort on purpose otherwise: this number exists to be subtracted from
+    a measured round trip, and a device that will not answer should leave the
+    remainder unexplained rather than stop the measurement.
     """
+    if setting not in ("low", "high"):           # an explicit time in seconds
+        return 0.0
     try:
         sd = _sounddevice()
     except AudioUnavailable:
@@ -225,7 +247,7 @@ def reported_latency_ms(input_device=None, output_device=None) -> float:
     for device, kind in ((input_device, "input"), (output_device, "output")):
         try:
             info = sd.query_devices(device, kind)
-            total += 1000.0 * float(info.get(f"default_low_{kind}_latency") or 0.0)
+            total += 1000.0 * float(info.get(f"default_{setting}_{kind}_latency") or 0.0)
         except Exception:                        # noqa: BLE001 - best effort
             continue
     return total
@@ -247,12 +269,15 @@ class LiveBackend:
     kind = "live"
 
     def __init__(self, input_device=None, output_device=None,
-                 block_size: int = 256, exclusive: bool = False) -> None:
+                 block_size: int = 256, exclusive: bool = False,
+                 latency="low") -> None:
         self.input_device = input_device
         self.output_device = output_device
         self.block_size = int(block_size)
         #: See :func:`exclusive_settings`.
         self.exclusive = bool(exclusive)
+        #: See :attr:`natvox.realtime.RealtimeSession.latency`.
+        self.latency = latency
         self._session: RealtimeSession | None = None
 
     @property
@@ -265,7 +290,7 @@ class LiveBackend:
                  if self.exclusive else None)
         session = RealtimeSession(processor, self.input_device,
                                   self.output_device, self.block_size,
-                                  extra_settings=extra)
+                                  extra_settings=extra, latency=self.latency)
         try:
             session.start()
         except Exception as exc:                # noqa: BLE001 - see below
@@ -282,13 +307,21 @@ class LiveBackend:
 
     @property
     def device_latency_ms(self) -> float:
-        """What the device buffers add, in and out."""
+        """What the device buffers add, in and out.
+
+        From the open stream once there is one, because PortAudio treats the
+        requested latency as a suggestion.  The block size is only a stand-in
+        for before it opens.
+        """
+        if self._session is not None:
+            return self._session.device_latency_ms
         return 2000.0 * self.block_size / 48000.0
 
     @property
     def claimed_latency_ms(self) -> float:
-        """What the drivers themselves claim, which is usually less."""
-        return reported_latency_ms(self.input_device, self.output_device)
+        """What the drivers claim for the setting this backend will ask for."""
+        return reported_latency_ms(self.input_device, self.output_device,
+                                   setting=self.latency)
 
 
 class OfflineBackend:

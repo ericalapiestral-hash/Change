@@ -383,7 +383,8 @@ class Window(QtWidgets.QWidget):
         self._sync_devices()
         settings = self.studio.settings
         return LiveBackend(settings.input_device, settings.output_device,
-                           settings.block_size, settings.exclusive)
+                           settings.block_size, settings.exclusive,
+                           settings.latency)
 
     def toggle(self) -> None:
         self.stop() if self.studio.running else self.start()

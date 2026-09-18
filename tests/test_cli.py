@@ -115,6 +115,24 @@ class TestDevices:
         assert "WASAPI" in lines[0] and "MME" in lines[1]
         assert "3.0ms" in lines[0] and "90.0ms" in lines[1]
 
+    def test_the_listing_shows_what_not_asking_would_cost(self, capsys, monkeypatch):
+        """The gap between the two columns is the delay a program pays for
+        leaving PortAudio's latency argument out."""
+        from natvox.app import backend as backend_module
+
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from test_app import FakeSoundDevice, fake_device
+
+        fake = FakeSoundDevice([fake_device("Yeti", 0,
+                                            default_low_input_latency=0.003)],
+                               ["Windows WASAPI"])
+        monkeypatch.setattr(backend_module, "_sounddevice", lambda: fake)
+        assert main(["devices"]) == 0
+        captured = capsys.readouterr()
+        row = [l for l in captured.out.splitlines() if "Yeti" in l][0]
+        assert "3.0ms" in row and "90.0ms" in row
+        assert "low" in captured.out and "high" in captured.out
+
 
 class TestTheBundledEntryPoint:
     """`natvox-cli.exe` implies `app`, which is a trap for the other names."""
@@ -181,6 +199,46 @@ class TestLoopback:
         out = capsys.readouterr().out
         assert "round trip" in out and "100.0 ms" in out
         assert "the converter adds" in out
+
+    def test_it_quotes_the_engine_the_user_will_actually_run(
+            self, capsys, monkeypatch):
+        """api.Session budgets extra delay so its settings can be moved live,
+        which is right for the window and wrong to quote to somebody about to
+        run `natvox live`.  On the default profile the two differ by 16 ms,
+        and the larger one was being printed for the command that does not
+        pay it."""
+        from natvox import api
+        from natvox.app import loopback
+        from natvox.config import VoiceProfile
+        from natvox.engine import VoiceChanger
+
+        monkeypatch.setattr(
+            loopback, "through_devices",
+            lambda *a, **k: loopback.RoundTrip(48000, 256, [100.0]))
+        assert main(["app", "--loopback"]) == 0
+        out = capsys.readouterr().out
+
+        live = VoiceChanger(48000, VoiceProfile()).latency_ms
+        window = api.Session(48000, VoiceProfile()).latency_ms
+        assert window > live + 5.0, "the two must differ, or this proves nothing"
+        assert f"{live:.1f} ms" in out
+        assert f"{window:.1f} ms" not in out
+
+    def test_what_it_asks_portaudio_for_reaches_the_measurement(
+            self, capsys, monkeypatch):
+        from natvox.app import loopback
+
+        asked = {}
+
+        def fake(*args, **kwargs):
+            asked.update(kwargs)
+            return loopback.RoundTrip(48000, 256, [100.0])
+
+        monkeypatch.setattr(loopback, "through_devices", fake)
+        assert main(["app", "--loopback"]) == 0
+        assert asked["latency"] == "low", "the default must not be PortAudio's"
+        assert main(["app", "--loopback", "--latency", "high"]) == 0
+        assert asked["latency"] == "high"
 
     def test_hearing_nothing_back_is_a_failure_not_a_success(
             self, capsys, monkeypatch):

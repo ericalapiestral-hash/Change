@@ -66,6 +66,10 @@ class Settings:
     #: WASAPI exclusive mode.  Windows only, and only on the WASAPI copy of a
     #: device -- see :func:`natvox.app.backend.exclusive_settings`.
     exclusive: bool = False
+    #: What to ask PortAudio for.  See
+    #: :attr:`natvox.realtime.RealtimeSession.latency`; "high" is what a
+    #: program that does not ask gets, and it is not meant for conversation.
+    latency: str = "low"
     remote_url: str = ""
     use_remote: bool = False
 
@@ -329,7 +333,8 @@ class Studio:
         chosen = backend or LiveBackend(self.settings.input_device,
                                         self.settings.output_device,
                                         self.settings.block_size,
-                                        self.settings.exclusive)
+                                        self.settings.exclusive,
+                                        self.settings.latency)
         try:
             chosen.start(processor)
         except AudioUnavailable as exc:
@@ -437,6 +442,7 @@ class Studio:
             settings.input_device, settings.output_device,
             sample_rate=settings.sample_rate, block_size=settings.block_size,
             attempts=attempts, exclusive=settings.exclusive,
+            latency=settings.latency,
         )
 
     def self_test(self, block_size: int | None = None, seconds: float = 3.0) -> MachineReport:

@@ -231,12 +231,17 @@ def measure(play_and_record, sample_rate: int, block_size: int = 256,
 
 def through_devices(input_device=None, output_device=None, sample_rate: int = 48000,
                     block_size: int = 256, attempts: int = 5, exclusive: bool = False,
-                    engine_ms: float = 0.0) -> RoundTrip:
+                    engine_ms: float = 0.0, latency="low") -> RoundTrip:
     """Measure a real device pair.  Loop the output back to the input first.
 
     With a virtual cable that means selecting the cable's playback end as the
     output and its recording end as the input, which is exactly the path the
     voice takes on its way to another program.
+
+    ``latency`` is passed to PortAudio and is not optional in practice: left
+    out, sounddevice asks for ``"high"``, and the measurement then reports a
+    path nobody would choose to use.  Run it both ways on one machine and the
+    difference is the cost of not choosing.
     """
     from .backend import (AudioUnavailable, _sounddevice, exclusive_settings,
                           rate_mismatch, reported_latency_ms)
@@ -254,13 +259,15 @@ def through_devices(input_device=None, output_device=None, sample_rate: int = 48
             device=(input_device, output_device),
             dtype="float32",
             extra_settings=settings,
+            latency=latency,
         )
         sd.wait()
         return np.asarray(recorded, dtype=np.float64).reshape(-1)
 
     try:
         return measure(play_and_record, sample_rate, block_size, attempts,
-                       reported_ms=reported_latency_ms(input_device, output_device),
+                       reported_ms=reported_latency_ms(input_device, output_device,
+                                                      setting=latency),
                        engine_ms=engine_ms,
                        note=rate_mismatch(input_device, output_device, sample_rate))
     except Exception as exc:                    # noqa: BLE001 - as LiveBackend

@@ -76,6 +76,11 @@ def _add_device_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--exclusive", action="store_true",
                         help="WASAPI exclusive mode: skips the Windows mixer, "
                              "and locks the device to this program")
+    parser.add_argument("--latency", choices=("low", "high"), default="low",
+                        help="what to ask PortAudio for. 'high' is what a "
+                             "program that does not ask gets, and it is meant "
+                             "for playback rather than for conversation; "
+                             "measure both to see what it costs")
 
 
 def _warn(profile: VoiceProfile) -> None:
@@ -147,13 +152,18 @@ def print_devices() -> int:
               "nothing.\nPlug something in, or install a virtual cable if the "
               "voice is going to another program.", file=sys.stderr)
         return 1
-    print(f"{'#':>4}  {'in':>3} {'out':>3}  {'claims':>8}  {'rate':>7}  device")
+    print(f"{'#':>4}  {'in':>3} {'out':>3}  {'low':>8} {'high':>8}  {'rate':>7}  device")
     for d in devices:
         print(f"{d.index:>4}  {d.inputs:>3} {d.outputs:>3}  "
-              f"{d.claimed_ms:>6.1f}ms  {d.default_sample_rate:>7.0f}  {d.label}")
-    print("\nBest first.  'claims' is the driver's own estimate of its buffers "
-          "and leaves out\nwhatever sits between it and this program; "
-          "`--loopback` measures the whole path.", file=sys.stderr)
+              f"{d.claimed_ms:>6.1f}ms {d.relaxed_ms:>6.1f}ms  "
+              f"{d.default_sample_rate:>7.0f}  {d.label}")
+    print("\nBest first.  'low' and 'high' are the driver's own estimates of its "
+          "buffers for\nPortAudio's two settings.  The gap between them is what a "
+          "program pays for not\nasking: sounddevice asks for 'high' unless told "
+          "otherwise.  natvox asks for 'low',\nand `--loopback --latency high` "
+          "measures the difference on this machine.\n\nBoth leave out whatever "
+          "sits between the driver and this program; only `--loopback`\nmeasures "
+          "the whole path.", file=sys.stderr)
     return 0
 
 
@@ -188,7 +198,8 @@ def cmd_live(args) -> int:
             print(str(exc), file=sys.stderr)
             return 1
     session = RealtimeSession(processor, input_device, output_device,
-                              args.block, extra_settings=extra)
+                              args.block, extra_settings=extra,
+                              latency=args.latency)
     print(f"engine latency {processor.latency_ms:.1f} ms, "
           f"total with device buffers ~{session.total_latency_ms:.1f} ms")
     print("running -- press Ctrl-C to stop")
@@ -233,7 +244,6 @@ def cmd_loopback(args) -> int:
     sweep out and timing its return measures all of them at once, including
     the ones that do not report anything.
     """
-    from . import api
     from .app import loopback
     from .app.backend import AudioUnavailable
 
@@ -242,6 +252,7 @@ def cmd_loopback(args) -> int:
             _device_arg(args.input_device), _device_arg(args.output_device),
             sample_rate=args.rate, block_size=args.block,
             attempts=args.attempts, exclusive=args.exclusive,
+            latency=args.latency,
         )
     except AudioUnavailable as exc:
         print(str(exc), file=sys.stderr)
@@ -249,7 +260,12 @@ def cmd_loopback(args) -> int:
     print(trip.summary())
     if not trip.delays_ms:
         return 1
-    engine = api.Session(args.rate, _profile_from_args(args)).latency_ms
+    # VoiceChanger, not api.Session: Session budgets extra delay so that its
+    # settings can be moved without rebuilding, which is right for the window
+    # and wrong to quote to somebody about to run `natvox live`.  The two
+    # differ by 16 ms on the default profile, and the larger one was being
+    # printed for the command that does not pay it.
+    engine = VoiceChanger(args.rate, _profile_from_args(args)).latency_ms
     print(f"\nthe converter adds {engine:.1f} ms on top of this, so a listener "
           f"would hear you\n{trip.measured_ms + engine:.1f} ms late.")
     return 0
