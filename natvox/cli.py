@@ -176,6 +176,10 @@ def cmd_live(args) -> int:
     processor = StreamProcessor(changer, channels=args.channels, dry_wet=args.dry_wet)
     input_device = _device_arg(args.input_device)
     output_device = _device_arg(args.output_device)
+    from .app.backend import rate_mismatch
+    mismatch = rate_mismatch(input_device, output_device, args.rate)
+    if mismatch:
+        print(f"note: {mismatch}", file=sys.stderr)
     extra = None
     if args.exclusive:
         from .app.backend import AudioUnavailable, exclusive_settings

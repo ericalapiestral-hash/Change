@@ -150,6 +150,11 @@ class RoundTrip:
     delays_ms: list[float]
     reported_ms: float = 0.0
     engine_ms: float = 0.0
+    #: Anything found while setting the measurement up that changes how to
+    #: read it -- a device running at a rate nobody asked for, say.  Part of
+    #: the result rather than a separate return, because a measurement whose
+    #: caveat arrives separately gets quoted without it.
+    note: str = ""
 
     @property
     def measured_ms(self) -> float:
@@ -182,8 +187,11 @@ class RoundTrip:
 
     def summary(self) -> str:
         if not self.delays_ms:
-            return ("nothing came back -- check that the output device really "
-                    "loops round to the input device, and that neither is muted")
+            return "\n".join(filter(None, [
+                "nothing came back -- check that the output device really "
+                "loops round to the input device, and that neither is muted",
+                self.note,
+            ]))
         lines = [
             f"round trip   {self.measured_ms:.1f} ms"
             + (f" (spread {self.spread_ms:.1f} ms over {self.attempts} tries)"
@@ -196,12 +204,15 @@ class RoundTrip:
         if self.engine_ms or self.reported_ms:
             lines.append(f"  unexplained {self.unexplained_ms:.1f} ms -- the system mixer, "
                          f"a virtual cable, or a resampler")
+        if self.note:
+            lines.append(self.note)
         return "\n".join(lines)
 
 
 def measure(play_and_record, sample_rate: int, block_size: int = 256,
             attempts: int = 5, tail_seconds: float = 0.5,
-            reported_ms: float = 0.0, engine_ms: float = 0.0) -> RoundTrip:
+            reported_ms: float = 0.0, engine_ms: float = 0.0,
+            note: str = "") -> RoundTrip:
     """Send the probe ``attempts`` times and time each echo.
 
     ``play_and_record(signal) -> recording`` does whatever opens the devices,
@@ -215,7 +226,7 @@ def measure(play_and_record, sample_rate: int, block_size: int = 256,
         delay = estimate_delay(recording, sent, sample_rate)
         if delay is not None:
             delays.append(delay * 1000.0)
-    return RoundTrip(sample_rate, block_size, delays, reported_ms, engine_ms)
+    return RoundTrip(sample_rate, block_size, delays, reported_ms, engine_ms, note)
 
 
 def through_devices(input_device=None, output_device=None, sample_rate: int = 48000,
@@ -228,7 +239,7 @@ def through_devices(input_device=None, output_device=None, sample_rate: int = 48
     voice takes on its way to another program.
     """
     from .backend import (AudioUnavailable, _sounddevice, exclusive_settings,
-                          reported_latency_ms)
+                          rate_mismatch, reported_latency_ms)
 
     sd = _sounddevice()
     settings = (exclusive_settings(input_device, output_device)
@@ -250,7 +261,8 @@ def through_devices(input_device=None, output_device=None, sample_rate: int = 48
     try:
         return measure(play_and_record, sample_rate, block_size, attempts,
                        reported_ms=reported_latency_ms(input_device, output_device),
-                       engine_ms=engine_ms)
+                       engine_ms=engine_ms,
+                       note=rate_mismatch(input_device, output_device, sample_rate))
     except Exception as exc:                    # noqa: BLE001 - as LiveBackend
         # PortAudio reports a missing device, a rate the pair cannot agree on
         # and a device already held by something else as the same exception

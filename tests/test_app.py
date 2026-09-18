@@ -21,7 +21,7 @@ from natvox.app import backend as backend_module
 from natvox.app.backend import (AudioUnavailable, Device, LiveBackend,
                                 OfflineBackend, exclusive_settings,
                                 host_api_of, list_devices,
-                                reported_latency_ms)
+                                rate_mismatch, reported_latency_ms)
 from natvox.app.core import MachineReport, Settings, Studio
 from natvox.realtime import StreamProcessor
 
@@ -284,6 +284,50 @@ class TestHostApis:
         with pytest.raises(AudioUnavailable) as raised:
             exclusive_settings(99, 99)
         assert "WASAPI" in str(raised.value)
+
+
+@pytest.fixture
+def cable_at_44100(monkeypatch):
+    """Device 0 at 48 kHz, device 1 a virtual cable at the rate they ship with."""
+    fake = FakeSoundDevice(
+        [fake_device("Yeti", 0), fake_device("CABLE", 0, default_samplerate=44100.0)],
+        [backend_module.WASAPI])
+    monkeypatch.setattr(backend_module, "_sounddevice", lambda: fake)
+    return fake
+
+
+class TestRateMismatch:
+    """A device at the wrong rate does not refuse -- the audio engine inserts
+    a resampler, which costs delay and quality and says nothing at all."""
+
+    def test_a_pair_that_agrees_says_nothing(self, cable_at_44100):
+        assert rate_mismatch(0, 0, 48000) == ""
+
+    def test_a_cable_left_at_44100_is_named(self, cable_at_44100):
+        note = rate_mismatch(1, 1, 48000)
+        assert "44100" in note and "48000" in note
+        assert "input" in note and "output" in note
+        assert "resampling" in note
+
+    def test_only_the_end_that_is_wrong_is_named(self, cable_at_44100):
+        note = rate_mismatch(1, 0, 48000)
+        assert "input device is set to 44100" in note
+        assert "output" not in note
+
+    def test_asking_for_the_rate_it_is_already_at_says_nothing(self, cable_at_44100):
+        assert rate_mismatch(1, 1, 44100) == ""
+
+    def test_a_device_that_will_not_answer_is_not_accused(self, cable_at_44100):
+        """Best effort: a device that will not say is not one that is wrong."""
+        assert rate_mismatch(99, 99, 48000) == ""
+
+    def test_it_reaches_the_measurement_rather_than_a_separate_return(self):
+        """A caveat that arrives separately gets quoted without it."""
+        from natvox.app.loopback import RoundTrip
+
+        trip = RoundTrip(48000, 256, [12.0], note="the cable is at 44100 Hz")
+        assert "44100" in trip.summary()
+        assert "44100" in RoundTrip(48000, 256, [], note="the cable is at 44100 Hz").summary()
 
 
 class TestExclusiveMode:

@@ -179,6 +179,37 @@ def exclusive_settings(input_device=None, output_device=None):
     return sd.WasapiSettings(exclusive=True)
 
 
+def rate_mismatch(input_device=None, output_device=None, rate: int = 48000) -> str:
+    """A sentence naming any device whose own rate is not ``rate``, or ''.
+
+    A device running at a different rate than the stream does not refuse: the
+    audio engine quietly inserts a resampler, which costs delay and a little
+    quality, and nothing anywhere says it happened.  It is the most common
+    reason a virtual cable measures worse than it should -- cables usually
+    default to 44100 while everything else here is at 48000 -- and it is fixed
+    in the device's own properties in about ten seconds, which makes it worth
+    far more than it costs to detect.
+    """
+    try:
+        sd = _sounddevice()
+    except AudioUnavailable:
+        return ""
+    wrong = []
+    for device, kind in ((input_device, "input"), (output_device, "output")):
+        try:
+            info = sd.query_devices(device, kind)
+            native = int(round(float(info["default_samplerate"])))
+        except Exception:                       # noqa: BLE001 - best effort
+            continue
+        if native != int(rate):
+            wrong.append(f"the {kind} device is set to {native} Hz")
+    if not wrong:
+        return ""
+    return (f"{' and '.join(wrong)}, not {int(rate)} Hz -- Windows will be "
+            f"resampling, which costs delay and quality and says nothing. "
+            f"Match them in the device's properties, or pass --rate.")
+
+
 def reported_latency_ms(input_device=None, output_device=None) -> float:
     """What the two drivers claim their buffers cost, together.
 

@@ -375,6 +375,14 @@ accurate to a fraction of a sample, and it returns "nothing came back" rather
 than a number when nothing did — silence, white noise, a tone and speech-shaped
 noise are all refused, because a confident wrong number is worse than none.
 
+**3. Match the sample rates.** A device set to a different rate than the
+stream does not refuse — the audio engine quietly inserts a resampler, which
+costs delay and a little quality and says nothing anywhere. It is the usual
+reason a virtual cable measures worse than it should, because cables commonly
+ship at 44100 while everything else here runs at 48000. Both `--loopback` and
+`live` name any end that disagrees, and it is fixed in that device's own
+properties in about ten seconds.
+
 **No numbers are quoted here because none were measured.** This environment has
 no audio hardware. The estimator is verified against signals delayed by an
 exact known number of samples (`tests/test_loopback.py`); the device path above
@@ -387,7 +395,8 @@ Measure first — and on most setups the answer will be no. A virtual cable is a
 memcpy between two buffers; it has no reason to cost anything. What costs is
 the buffering around it, and existing cables expose that as a setting. If
 `--loopback` says the unexplained part is a millisecond or two, there is
-nothing there to win.
+nothing there to win — and if it says twenty, check lever 3 before blaming the
+cable, because a resampler nobody asked for looks exactly like a slow cable.
 
 If it says twenty, it is worth knowing what the alternative actually involves:
 
@@ -459,7 +468,7 @@ reconstructs to −322 dB. It has **not** been run against a real checkpoint.
 
 ```bash
 pip install -e '.[dev]'
-pytest                      # 561 tests
+pytest                      # 567 tests
 python tools/bench.py       # artifact measurements
 
 cd web && npm install && npm test     # 127 more, including the live path
