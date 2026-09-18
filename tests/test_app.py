@@ -324,6 +324,36 @@ class TestExclusiveMode:
         assert Settings.load(path).exclusive is True
 
 
+class TestTheRoundTripMeasurement:
+    def test_it_refuses_while_the_stream_is_open(self, voice_audio):
+        studio = Studio(Settings(voice="female_soft"))
+        studio.start(OfflineBackend(voice_audio, 256, realtime=True, loop=True))
+        try:
+            with pytest.raises(AudioUnavailable) as raised:
+                studio.measure_round_trip()
+            assert "stop it first" in str(raised.value)
+            assert studio.running, "asking must not stop it"
+        finally:
+            studio.stop()
+
+    def test_it_measures_the_pair_the_settings_name(self, monkeypatch):
+        from natvox.app import loopback
+
+        asked = {}
+
+        def fake(input_device=None, output_device=None, **kwargs):
+            asked.update(kwargs, input_device=input_device,
+                         output_device=output_device)
+            return loopback.RoundTrip(48000, 256, [12.0])
+
+        monkeypatch.setattr(loopback, "through_devices", fake)
+        studio = Studio(Settings(input_device=3, output_device=4,
+                                 block_size=128, exclusive=True))
+        assert studio.measure_round_trip().measured_ms == 12.0
+        assert asked["input_device"] == 3 and asked["output_device"] == 4
+        assert asked["block_size"] == 128 and asked["exclusive"] is True
+
+
 class TestRunning:
     def _run(self, studio, audio, block=256, realtime=False, **kwargs):
         backend = OfflineBackend(audio, block, realtime=realtime, **kwargs)

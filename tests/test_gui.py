@@ -295,6 +295,16 @@ class TestAnswers:
         assert asked["exclusive"] is True
         assert asked["block_size"] == window.studio.settings.block_size
 
+    def test_measuring_while_it_is_running_says_to_stop_it(self, window):
+        """Both want the same two devices, and what PortAudio says about a
+        device in use is not a sentence about what the person did wrong."""
+        window.start()
+        pump(0.2)
+        window.measure_round_trip()
+        assert "Stop it first" in window.status.text()
+        assert window.studio.running, "asking must not stop it"
+        window.stop()
+
     def test_saving_before_anything_was_said_explains_itself(self, window):
         window.save_capture()
         assert "Nothing recorded" in window.status.text()

@@ -402,9 +402,20 @@ class Studio:
         and its recording end as the input.  That is the path a voice takes on
         its way into another program, so this is the delay that program hears,
         including every buffer nothing reports.
+
+        Refuses while the stream is open, because this needs the same two
+        devices the stream is holding.  PortAudio would report that as
+        whatever the driver says about a device in use, which is usually not a
+        sentence about what the person did wrong -- and in exclusive mode it
+        is a flat refusal with no explanation at all.
         """
         from . import loopback
 
+        if self.running:
+            raise AudioUnavailable(
+                "stop it first: measuring needs the same two devices the "
+                "stream is holding"
+            )
         settings = self.settings
         return loopback.through_devices(
             settings.input_device, settings.output_device,

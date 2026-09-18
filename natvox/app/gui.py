@@ -462,6 +462,9 @@ class Window(QtWidgets.QWidget):
         self._worker.run(lambda: self.studio.self_test(block))
 
     def measure_round_trip(self) -> None:
+        if self.studio.running:
+            self.report("Stop it first -- measuring needs the same two devices.")
+            return
         self._sync_devices()
         self.report("measuring -- listen for a short sweep...")
         self._worker.run(self.studio.measure_round_trip)
