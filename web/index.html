@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>natvox</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%236ea8fe'/%3E%3Cg stroke='%2312141a' stroke-width='2.6' stroke-linecap='round'%3E%3Cpath d='M7 16v0'/%3E%3Cpath d='M12 11v10'/%3E%3Cpath d='M17 7v18'/%3E%3Cpath d='M22 12v8'/%3E%3Cpath d='M26 15v2'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header>
+  <h1>natvox</h1>
+  <p class="tagline" data-i18n="tagline"></p>
+  <div class="spacer"></div>
+  <button id="lang" class="ghost" type="button">EN</button>
+  <button id="power" class="primary" type="button" data-i18n="start"></button>
+</header>
+
+<div id="banner" class="banner warn" hidden>
+  <strong data-i18n="headphonesTitle"></strong>
+  <span data-i18n="headphonesBody"></span>
+</div>
+<div id="error" class="banner error" hidden></div>
+
+<main>
+  <section class="card">
+    <h2 data-i18n="voice"></h2>
+    <label class="row">
+      <span data-i18n="preset"></span>
+      <select id="preset"></select>
+    </label>
+    <label class="row slider">
+      <span data-i18n="pitch"></span>
+      <input id="pitch" type="range" min="-8" max="8" step="0.1" value="0">
+      <output id="pitchOut">0.0 st</output>
+    </label>
+    <label class="row slider">
+      <span data-i18n="formant"></span>
+      <input id="formant" type="range" min="-4" max="4" step="0.1" value="0">
+      <output id="formantOut">0.0 st</output>
+    </label>
+    <label class="row slider">
+      <span data-i18n="breath"></span>
+      <input id="breath" type="range" min="0" max="0.3" step="0.01" value="0">
+      <output id="breathOut">0.00</output>
+    </label>
+    <label class="row slider">
+      <span data-i18n="gain"></span>
+      <input id="gain" type="range" min="-12" max="12" step="0.5" value="0">
+      <output id="gainOut">0.0 dB</output>
+    </label>
+    <label class="row check">
+      <input id="shiftUnvoiced" type="checkbox">
+      <span data-i18n="shiftUnvoiced"></span>
+    </label>
+    <p class="hint" data-i18n="shiftUnvoicedHint"></p>
+    <p id="warnings" class="hint warnText"></p>
+  </section>
+
+  <section class="card">
+    <h2 data-i18n="monitor"></h2>
+    <div class="meter-row">
+      <span data-i18n="inLevel"></span>
+      <div class="meter"><i id="meterIn"></i></div>
+      <output id="meterInText">-inf</output>
+    </div>
+    <div class="meter-row">
+      <span data-i18n="outLevel"></span>
+      <div class="meter"><i id="meterOut"></i></div>
+      <output id="meterOutText">-inf</output>
+    </div>
+    <div class="stats">
+      <div><dt data-i18n="f0Now"></dt><dd id="f0Now">--</dd></div>
+      <div><dt data-i18n="voicing"></dt><dd id="voicing">--</dd></div>
+      <div><dt data-i18n="latency"></dt><dd id="latency">--</dd></div>
+      <div><dt data-i18n="load"></dt><dd id="load">--</dd></div>
+    </div>
+    <p class="hint" data-i18n="loadHint"></p>
+  </section>
+
+  <section class="card wide">
+    <h2 data-i18n="range"></h2>
+    <p class="hint" data-i18n="rangeHint"></p>
+    <canvas id="hist" width="720" height="120" aria-label="pitch histogram"></canvas>
+    <div class="range-row">
+      <label class="row slider">
+        <span>f0 min</span>
+        <input id="f0min" type="range" min="55" max="180" step="1" value="75">
+        <output id="f0minOut">75 Hz</output>
+      </label>
+      <label class="row slider">
+        <span>f0 max</span>
+        <input id="f0max" type="range" min="200" max="800" step="10" value="500">
+        <output id="f0maxOut">500 Hz</output>
+      </label>
+      <button id="autoRange" class="ghost" type="button" data-i18n="autoRange"></button>
+    </div>
+    <label class="row slider">
+      <span data-i18n="onsetLookahead"></span>
+      <input id="onsetLookahead" type="range" min="0" max="16" step="1" value="8">
+      <output id="onsetLookaheadOut">8 ms</output>
+    </label>
+    <p class="hint" data-i18n="onsetLookaheadHint"></p>
+    <p id="rangeAdvice" class="hint"></p>
+  </section>
+
+  <section class="card wide">
+    <h2 data-i18n="compare"></h2>
+    <p class="hint" data-i18n="compareHint"></p>
+    <div class="button-row">
+      <button id="bypass" class="big" type="button" data-i18n="holdDry"></button>
+      <button id="capture" class="ghost" type="button" data-i18n="capture"></button>
+      <button id="loop" class="ghost" type="button" disabled data-i18n="loopPlay"></button>
+      <button id="download" class="ghost" type="button" disabled data-i18n="download"></button>
+    </div>
+    <div id="outputPicker" class="row" hidden>
+      <span data-i18n="outputDevice"></span>
+      <select id="sink"></select>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <span data-i18n="footer"></span>
+</footer>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

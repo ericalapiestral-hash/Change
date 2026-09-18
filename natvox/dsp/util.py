@@ -298,44 +298,26 @@ def soft_clip(x: np.ndarray, ceiling: float = 0.98, knee: float = 0.75) -> np.nd
     return y
 
 
-def resample_grain(grain: np.ndarray, out_len: int, fractional_delay: float = 0.0) -> np.ndarray:
-    """Band-limited length change of one Hann-windowed grain, plus a sub-sample shift.
+_RESAMPLER_CACHE: dict[float, "GrainResampler"] = {}
 
-    Frequency-domain resampling is exact for a segment that tapers to zero at
-    both ends, which is precisely what a PSOLA grain is.  Shortening a grain
-    (formant shift up) stretches its spectrum, so the top of the band is
-    discarded rather than folded back as aliasing.
 
-    ``fractional_delay`` shifts the grain by a fraction of a sample, via a
-    linear phase ramp.  This matters more than it sounds: rounding grain
-    positions to whole samples jitters the synthesis period by up to half a
-    sample, and that jitter alone puts a noise floor around -25 dB under the
-    voice -- audible as exactly the gritty, buzzy quality a voice changer is
-    supposed to avoid.  Placing grains to a fraction of a sample removes it.
+def resample_grain(grain: np.ndarray, out_len: int,
+                   fractional_delay: float = 0.0) -> np.ndarray:
+    """Convenience wrapper over :class:`natvox.dsp.resample.GrainResampler`.
+
+    The engine builds its own resampler once and passes it down, since the
+    formant ratio is fixed for the life of a configuration.  This exists for
+    one-off calls and tests, and caches by ratio so repeated use is cheap.
     """
+    from .resample import GrainResampler
+
     n = grain.size
-    shift = abs(fractional_delay) > 1e-4
-    if out_len == n and not shift:
+    if (out_len == n and abs(fractional_delay) <= 1e-4) or n < 4 or out_len < 4:
         return grain.astype(np.float64, copy=False)
-    if n < 4 or out_len < 4:
-        return grain.astype(np.float64, copy=False)
-
-    spec = np.fft.rfft(grain)
-    out_bins = out_len // 2 + 1
-    if out_len < n:
-        spec = spec[:out_bins]
-    elif out_len > n:
-        spec = np.concatenate([spec, np.zeros(out_bins - spec.size, dtype=complex)])
-    else:
-        spec = spec.copy()
-
-    if shift:
-        ramp = np.exp(-2j * np.pi * np.arange(out_bins) * (fractional_delay / out_len))
-        spec *= ramp
-        if out_len % 2 == 0 and spec.size > 1:
-            # A phase-ramped Nyquist bin cannot stay real; it holds no
-            # meaningful speech energy, so drop it rather than fold it back.
-            spec[-1] = 0.0
-    elif out_len % 2 == 0 and spec.size > 1:
-        spec[-1] = spec[-1].real
-    return np.fft.irfft(spec, out_len) * (out_len / n)
+    key = round(n / out_len, 6)
+    resampler = _RESAMPLER_CACHE.get(key)
+    if resampler is None:
+        if len(_RESAMPLER_CACHE) > 64:
+            _RESAMPLER_CACHE.clear()
+        resampler = _RESAMPLER_CACHE[key] = GrainResampler(key)
+    return resampler(grain, out_len, fractional_delay)

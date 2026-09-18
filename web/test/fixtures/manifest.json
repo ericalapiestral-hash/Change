@@ -1,0 +1,365 @@
+{
+ "sample_rate": 48000,
+ "cases": [
+  {
+   "signal": "speech",
+   "preset": "off",
+   "profile": {
+    "pitchSemitones": 0.0,
+    "formantSemitones": 0.0,
+    "f0Min": 75.0,
+    "f0Max": 500.0,
+    "shiftUnvoiced": false,
+    "breathiness": 0.0,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 2788
+  },
+  {
+   "signal": "speech",
+   "preset": "brighter",
+   "profile": {
+    "pitchSemitones": 1.5,
+    "formantSemitones": 1.0,
+    "f0Min": 75.0,
+    "f0Max": 500.0,
+    "shiftUnvoiced": false,
+    "breathiness": 0.0,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 2788
+  },
+  {
+   "signal": "speech",
+   "preset": "male_to_female",
+   "profile": {
+    "pitchSemitones": 7.0,
+    "formantSemitones": 2.6,
+    "f0Min": 70.0,
+    "f0Max": 400.0,
+    "shiftUnvoiced": true,
+    "breathiness": 0.03,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 2926
+  },
+  {
+   "signal": "speech",
+   "preset": "female_to_male",
+   "profile": {
+    "pitchSemitones": -7.0,
+    "formantSemitones": -2.6,
+    "f0Min": 110.0,
+    "f0Max": 500.0,
+    "shiftUnvoiced": true,
+    "breathiness": 0.0,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 2398
+  },
+  {
+   "signal": "speech",
+   "preset": "younger",
+   "profile": {
+    "pitchSemitones": 3.0,
+    "formantSemitones": 2.2,
+    "f0Min": 75.0,
+    "f0Max": 550.0,
+    "shiftUnvoiced": false,
+    "breathiness": 0.0,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 2788
+  },
+  {
+   "signal": "speech",
+   "preset": "anonymous",
+   "profile": {
+    "pitchSemitones": -3.5,
+    "formantSemitones": 2.0,
+    "f0Min": 70.0,
+    "f0Max": 500.0,
+    "shiftUnvoiced": true,
+    "breathiness": 0.0,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 3183
+  },
+  {
+   "signal": "creak",
+   "preset": "off",
+   "profile": {
+    "pitchSemitones": 0.0,
+    "formantSemitones": 0.0,
+    "f0Min": 75.0,
+    "f0Max": 500.0,
+    "shiftUnvoiced": false,
+    "breathiness": 0.0,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 2788
+  },
+  {
+   "signal": "creak",
+   "preset": "brighter",
+   "profile": {
+    "pitchSemitones": 1.5,
+    "formantSemitones": 1.0,
+    "f0Min": 75.0,
+    "f0Max": 500.0,
+    "shiftUnvoiced": false,
+    "breathiness": 0.0,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 2788
+  },
+  {
+   "signal": "creak",
+   "preset": "male_to_female",
+   "profile": {
+    "pitchSemitones": 7.0,
+    "formantSemitones": 2.6,
+    "f0Min": 70.0,
+    "f0Max": 400.0,
+    "shiftUnvoiced": true,
+    "breathiness": 0.03,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 2926
+  },
+  {
+   "signal": "creak",
+   "preset": "female_to_male",
+   "profile": {
+    "pitchSemitones": -7.0,
+    "formantSemitones": -2.6,
+    "f0Min": 110.0,
+    "f0Max": 500.0,
+    "shiftUnvoiced": true,
+    "breathiness": 0.0,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 2398
+  },
+  {
+   "signal": "creak",
+   "preset": "younger",
+   "profile": {
+    "pitchSemitones": 3.0,
+    "formantSemitones": 2.2,
+    "f0Min": 75.0,
+    "f0Max": 550.0,
+    "shiftUnvoiced": false,
+    "breathiness": 0.0,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 2788
+  },
+  {
+   "signal": "creak",
+   "preset": "anonymous",
+   "profile": {
+    "pitchSemitones": -3.5,
+    "formantSemitones": 2.0,
+    "f0Min": 70.0,
+    "f0Max": 500.0,
+    "shiftUnvoiced": true,
+    "breathiness": 0.0,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 3183
+  },
+  {
+   "signal": "noise",
+   "preset": "off",
+   "profile": {
+    "pitchSemitones": 0.0,
+    "formantSemitones": 0.0,
+    "f0Min": 75.0,
+    "f0Max": 500.0,
+    "shiftUnvoiced": false,
+    "breathiness": 0.0,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 2788
+  },
+  {
+   "signal": "noise",
+   "preset": "brighter",
+   "profile": {
+    "pitchSemitones": 1.5,
+    "formantSemitones": 1.0,
+    "f0Min": 75.0,
+    "f0Max": 500.0,
+    "shiftUnvoiced": false,
+    "breathiness": 0.0,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 2788
+  },
+  {
+   "signal": "noise",
+   "preset": "male_to_female",
+   "profile": {
+    "pitchSemitones": 7.0,
+    "formantSemitones": 2.6,
+    "f0Min": 70.0,
+    "f0Max": 400.0,
+    "shiftUnvoiced": true,
+    "breathiness": 0.03,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 2926
+  },
+  {
+   "signal": "noise",
+   "preset": "female_to_male",
+   "profile": {
+    "pitchSemitones": -7.0,
+    "formantSemitones": -2.6,
+    "f0Min": 110.0,
+    "f0Max": 500.0,
+    "shiftUnvoiced": true,
+    "breathiness": 0.0,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 2398
+  },
+  {
+   "signal": "noise",
+   "preset": "younger",
+   "profile": {
+    "pitchSemitones": 3.0,
+    "formantSemitones": 2.2,
+    "f0Min": 75.0,
+    "f0Max": 550.0,
+    "shiftUnvoiced": false,
+    "breathiness": 0.0,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 2788
+  },
+  {
+   "signal": "noise",
+   "preset": "anonymous",
+   "profile": {
+    "pitchSemitones": -3.5,
+    "formantSemitones": 2.0,
+    "f0Min": 70.0,
+    "f0Max": 500.0,
+    "shiftUnvoiced": true,
+    "breathiness": 0.0,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 3183
+  }
+ ]
+}

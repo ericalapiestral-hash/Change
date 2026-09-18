@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.fft import irfft, next_fast_len, rfft
+from scipy.fft import irfft, rfft
 
 from .util import WINDOWS, EPS
 
@@ -20,6 +20,18 @@ from .util import WINDOWS, EPS
 #: plus F1); fricatives put almost none there.  Used as a second, independent
 #: voicing cue -- periodicity alone will occasionally latch onto noise.
 LOW_BAND_HZ = 1000.0
+
+#: A normalised difference this small means the waveform repeats almost
+#: exactly at that lag.  Below it, the estimate is treated as certain enough
+#: to override the tracker's own history.
+CONFIDENT_DIP = 0.02
+
+
+def _next_pow2(n: int) -> int:
+    size = 4
+    while size < n:
+        size *= 2
+    return size
 
 
 @dataclass
@@ -53,6 +65,7 @@ class YinF0Tracker:
         unvoiced_periodicity: float = 0.55,
         voiced_low_band: float = 0.30,
         unvoiced_low_band: float = 0.18,
+        sustain_low_band: float = 0.62,
         onset_frames: int = 2,
     ) -> None:
         if not 0 < f0_min < f0_max < sample_rate / 2:
@@ -68,6 +81,7 @@ class YinF0Tracker:
         self.unvoiced_periodicity = float(unvoiced_periodicity)
         self.voiced_low_band = float(voiced_low_band)
         self.unvoiced_low_band = float(unvoiced_low_band)
+        self.sustain_low_band = float(sustain_low_band)
         self.onset_frames = int(onset_frames)
 
         self.tau_min = max(2, int(np.floor(sample_rate / f0_max)))
@@ -75,7 +89,11 @@ class YinF0Tracker:
         self.window = self.tau_max          # YIN integration window
         self.span = self.window + self.tau_max
         self._span = self.span
-        self._nfft = next_fast_len(self._span + self.window)
+        # Powers of two, not merely "fast" lengths: the browser build uses a
+        # radix-2 transform, and any size at or above span+window yields the
+        # same linear correlation, so matching sizes costs nothing and makes
+        # the two implementations comparable sample for sample.
+        self._nfft = _next_pow2(self.span + self.window)
 
         # Label the frame at the centre of everything it looks at: that is
         # where the estimate is actually valid, and it splits the buffering
@@ -84,12 +102,13 @@ class YinF0Tracker:
         self.lookahead = self.span - self.half
         self.history = self.half
 
-        self._band_nfft = next_fast_len(self.window)
+        self._band_nfft = _next_pow2(self.window)
         self._band_cut = int(LOW_BAND_HZ * self._band_nfft / sample_rate) + 1
 
         self._prev_tau = 0.0
         self._prev_voiced = False
         self._pending = 0
+        self._harmonic_override = False
         self._f0_hist: list[float] = []
         self._noise_rms = 1e-4
 
@@ -128,7 +147,8 @@ class YinF0Tracker:
         return float(np.sum(spec[:self._band_cut]) / total)
 
     def _pick_tau(self, cmnd: np.ndarray) -> float:
-        """Absolute-threshold search with an octave-continuity preference."""
+        """Absolute-threshold search with harmonic and continuity guards."""
+        self._harmonic_override = False
         band = cmnd[self.tau_min:self.tau_max + 1]
         if band.size == 0:
             return 0.0
@@ -144,9 +164,45 @@ class YinF0Tracker:
                 tau += 1
             best = tau
 
+        # Harmonic guard.  The first-dip rule is what keeps YIN off the
+        # sub-harmonics, but it has a mirror-image failure: when the true
+        # period exceeds twice tau_min -- i.e. the pitch is above f0_max/2 --
+        # a shallow dip at half the true period can appear first and be taken,
+        # putting the estimate an octave high.  That band is not exotic: with
+        # a 500 Hz ceiling it is 250-265 Hz, ordinary female speech, and a
+        # vowel tracked an octave out is not merely detuned, it is destroyed.
+        # So if a far deeper dip sits at an exact multiple of the chosen
+        # period, prefer it.  The additive margin is what stops this sliding
+        # an octave *down* on a perfectly periodic signal, where every
+        # multiple dips to zero.
+        for multiple in (2, 3):
+            lo = max(self.tau_min, int(best * multiple * 0.93))
+            hi = min(self.tau_max, int(best * multiple * 1.07))
+            if hi <= lo:
+                continue
+            candidate = int(np.argmin(cmnd[lo:hi + 1])) + lo
+            if cmnd[candidate] + 0.05 < cmnd[best] * 0.75:
+                best = candidate
+                # The evidence is strong -- a dip at essentially zero against
+                # one an order of magnitude shallower -- so this also overrides
+                # the continuity and median guards below.  Without that, an
+                # octave error made in the first frames of a vowel is latched
+                # in by its own history and never recovers.
+                self._harmonic_override = True
+
+        # An overwhelming dip outvotes history.  A confident estimate that
+        # disagrees sharply with the previous frame is usually the moment an
+        # earlier mistake becomes visible, not a new one being made -- and
+        # without this, a wrong period picked while a vowel was still fading
+        # in is held by the continuity guard for the rest of the note and then
+        # defended by the median guard as well.
+        if (cmnd[best] < CONFIDENT_DIP and self._prev_tau > 0
+                and abs(np.log2(max(best, 1) / self._prev_tau)) > 0.25):
+            self._harmonic_override = True
+
         # Octave guard: if the previous frame was voiced and there is a dip
         # near the previous period that is nearly as deep, stay on it.
-        if self._prev_voiced and self._prev_tau > 0:
+        if self._prev_voiced and self._prev_tau > 0 and not self._harmonic_override:
             lo = max(self.tau_min, int(self._prev_tau * 0.80))
             hi = min(self.tau_max, int(self._prev_tau * 1.25))
             if hi > lo:
@@ -154,7 +210,7 @@ class YinF0Tracker:
                 if local != best and cmnd[local] <= cmnd[best] * 1.30 + 0.02:
                     best = local
 
-        return self._parabolic(cmnd, best)
+        return self._clamp_tau(self._parabolic(cmnd, best))
 
     @staticmethod
     def _parabolic(y: np.ndarray, i: int) -> float:
@@ -166,6 +222,15 @@ class YinF0Tracker:
         if abs(denom) < EPS:
             return float(i)
         return float(i) + 0.5 * (a - c) / denom
+
+    def _clamp_tau(self, tau: float) -> float:
+        """Keep the interpolated period inside the searched range.
+
+        The parabola through three points can land outside the bracket when
+        the minimum is at its edge, and a period outside [tau_min, tau_max] is
+        one the rest of the engine has not budgeted buffers for.
+        """
+        return float(min(max(tau, self.tau_min), self.tau_max))
 
     # ----------------------------------------------------------------- public
     def estimate(self, segment: np.ndarray, position: int) -> F0Frame:
@@ -193,11 +258,16 @@ class YinF0Tracker:
         loud_enough = rms > max(self._noise_rms * 2.0, 1.5e-4)
         usable = bool(loud_enough and tau >= self.tau_min)
         if self._prev_voiced:
-            # Sustain on either cue: vowels dip in periodicity at formant
-            # transitions, and low-band energy dips on close vowels.
-            voiced = usable and (
+            # Creak is the case this branch exists for.  Almost every sentence
+            # ends in it, and its periods are so irregular that periodicity
+            # collapses -- yet it is unmistakably a voice, and if it falls to
+            # the unvoiced path the listener hears the speaker's own pitch
+            # return at the end of every phrase.  A frame whose energy is
+            # overwhelmingly low-band cannot be a fricative, so it is allowed
+            # to hold voicing on periodicity alone having failed.
+            voiced = usable and low_band >= self.unvoiced_low_band and (
                 periodicity >= self.unvoiced_periodicity
-                and low_band >= self.unvoiced_low_band
+                or low_band >= self.sustain_low_band
             )
             self._pending = self.onset_frames if voiced else 0
         else:
@@ -236,6 +306,12 @@ class YinF0Tracker:
         self._f0_hist.append(f0)
         if len(self._f0_hist) > 3:
             self._f0_hist.pop(0)
+        if self._harmonic_override:
+            # Start the history again from the corrected value; otherwise the
+            # median would out-vote the correction for the next two frames and
+            # the estimate would oscillate.
+            self._f0_hist = [f0, f0, f0]
+            return f0
         if len(self._f0_hist) < 3:
             return f0
         med = float(np.median(self._f0_hist))
@@ -247,5 +323,6 @@ class YinF0Tracker:
         self._prev_tau = 0.0
         self._prev_voiced = False
         self._pending = 0
+        self._harmonic_override = False
         self._f0_hist.clear()
         self._noise_rms = 1e-4

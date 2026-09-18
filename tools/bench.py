@@ -15,10 +15,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import natvox                                  # noqa: E402
 from evaluate import (                         # noqa: E402
-    formant_error_db, harmonic_split_db, hnr_db, pitch_error_cents,
-    unvoiced_error_db,
+    creak_voicing, formant_error_db, harmonic_split_db, hnr_db,
+    jitter_shimmer, onset_lag_ms, pitch_error_cents, unvoiced_error_db,
 )
-from synth_speech import VOWELS, glottal_source, utterance, vocal_tract  # noqa: E402
+from synth_speech import (                     # noqa: E402
+    VOWELS, creak_fall, glottal_source, human_vowel, onset_train, utterance,
+    vocal_tract,
+)
 
 SR = 48000
 
@@ -39,7 +42,7 @@ def sustained(f0: float = 120.0, vowel: str = "a", seconds: float = 1.2,
     return 0.5 * x
 
 
-def run(name: str, profile, dry_utt, truth, dry_sus, f0_sus) -> dict:
+def run(name: str, profile, dry_utt, truth, dry_sus, f0_sus, boundary) -> dict:
     r, alpha = profile.pitch_ratio, profile.formant_ratio
 
     t0 = time.perf_counter()
@@ -58,8 +61,18 @@ def run(name: str, profile, dry_utt, truth, dry_sus, f0_sus) -> dict:
     unvoiced = eroded & loud
     guard = slice(int(0.05 * SR), -int(0.05 * SR))
 
+    onsets, onset_truth, creak, creak_truth, human, human_region, human_jitter = boundary
+    onset_mean, _ = onset_lag_ms(onsets, SR, profile, onset_truth["onsets"])
+    creak_share, creak_flips = creak_voicing(creak, SR, profile, creak_truth["creak"])
+    wet_human = natvox.process_array(human, SR, profile, block_size=512)
+    wet_jitter, _ = jitter_shimmer(wet_human, SR, 120.0 * r, human_region)
+
     return {
         "preset": name,
+        "onset_ms": onset_mean,
+        "creak_pct": 100.0 * creak_share,
+        "creak_flips": creak_flips,
+        "jitter_ratio": wet_jitter / human_jitter if human_jitter else float("nan"),
         "pitch_st": profile.pitch_semitones,
         "formant_st": profile.formant_semitones,
         "latency_ms": natvox.VoiceChanger(SR, profile).latency_ms,
@@ -78,27 +91,42 @@ def main(argv: list[str]) -> int:
     dry_utt, truth = utterance(SR)
     f0_sus = 120.0
     dry_sus = sustained(f0_sus)
+    human = human_vowel(SR)
+    human_region = (int(0.08 * SR), human.size - int(0.08 * SR))
+    human_jitter, _ = jitter_shimmer(human, SR, 120.0, human_region)
+    boundary = (*onset_train(SR), *creak_fall(SR), human, human_region, human_jitter)
 
     wanted = argv or [
         "off", "brighter", "deeper", "younger", "male_to_female_subtle",
         "male_to_female", "female_to_male", "anonymous",
     ]
 
-    header = (f"{'preset':<24}{'pitch':>6}{'form':>6}{'lat':>7}{'rtf':>7}"
-              f"{'cents':>8}{'formΔdB':>9}{'inharm':>9}{'HNR':>7}{'unvcd':>8}")
+    header = (f"{'preset':<22}{'pitch':>6}{'form':>6}{'lat':>7}{'rtf':>6}"
+              f"{'cents':>7}{'formΔdB':>9}{'inharm':>8}{'HNR':>6}{'unvcd':>7}"
+              f"{'onset':>7}{'creak':>12}{'jitter':>8}")
     print(header)
     print("-" * len(header))
     rows = []
     for name in wanted:
-        row = run(name, natvox.presets.get(name), dry_utt, truth, dry_sus, f0_sus)
+        row = run(name, natvox.presets.get(name), dry_utt, truth, dry_sus, f0_sus, boundary)
         rows.append(row)
-        print(f"{row['preset']:<24}{row['pitch_st']:>+6.1f}{row['formant_st']:>+6.1f}"
-              f"{row['latency_ms']:>6.0f}m{row['rtf']:>7.3f}"
-              f"{row['pitch_cents']:>8.1f}{row['formant_db']:>9.2f}"
-              f"{row['inharm_out']:>9.1f}"
-              f"{row['hnr_out']:>7.1f}{row['unvoiced_db']:>8.2f}")
+        print(f"{row['preset']:<22}{row['pitch_st']:>+6.1f}{row['formant_st']:>+6.1f}"
+              f"{row['latency_ms']:>6.0f}m{row['rtf']:>6.2f}"
+              f"{row['pitch_cents']:>7.1f}{row['formant_db']:>9.2f}"
+              f"{row['inharm_out']:>8.1f}"
+              f"{row['hnr_out']:>6.1f}{row['unvoiced_db']:>7.2f}"
+              f"{row['onset_ms']:>6.1f}m"
+              f"{row['creak_pct']:>7.1f}%/{row['creak_flips']:<3d}"
+              f"{row['jitter_ratio']:>7.2f}x")
     print(f"\nreference (unprocessed sustained vowel): "
           f"inharmonic {rows[0]['inharm_in']:.1f} dB, HNR {rows[0]['hnr_in']:.1f} dB")
+    print("onset = ms from a true vowel onset to the first voiced pitch mark; "
+          "creak = share of a\ncreaky phrase-end routed to the unvoiced path, "
+          "and how often it flips there and back.\njitter = period-to-period "
+          "irregularity returned, as a multiple of a human-like input's own; "
+          "under 1.0\nmeans the voice came back more perfect than the speaker, "
+          "which is what sounds robotic.\nAll three are blind spots of every "
+          "other column here.")
     return 0
 
 

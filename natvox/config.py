@@ -60,6 +60,15 @@ class VoiceProfile:
     #: Rumble filter cutoff.  Zero disables it; values between zero and
     #: :data:`natvox.dsp.util.BiquadHighpass.MIN_CUTOFF_HZ` also disable it,
     #: because a biquad that close to DC is numerically unstable.
+    #: How far ahead of a mark pitch tracking may be consulted when deciding
+    #: whether that mark is voiced.  Pitch tracking cannot call a frame voiced
+    #: until it has seen a couple of periods, so without this the first
+    #: 20-30 ms of every syllable leaves on the unvoiced path -- unshifted, at
+    #: the speaker's own pitch, which is heard as a scoop into every syllable.
+    #: Reading a little way ahead recovers most of it, and costs exactly that
+    #: much latency.  Zero disables it.
+    onset_lookahead_ms: float = 8.0
+
     highpass_hz: float = 60.0
 
     def __post_init__(self) -> None:
@@ -69,6 +78,8 @@ class VoiceProfile:
             raise ValueError("breathiness must be in [0, 1]")
         if abs(self.pitch_semitones) > 24.0 or abs(self.formant_semitones) > 24.0:
             raise ValueError("shifts beyond +-24 semitones are not supported")
+        if not 0.0 <= self.onset_lookahead_ms <= 30.0:
+            raise ValueError("onset_lookahead_ms must be in [0, 30]")
         if not 0.0 <= self.highpass_hz <= 500.0:
             raise ValueError("highpass_hz must be in [0, 500]; 0 disables it")
 

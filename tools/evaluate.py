@@ -156,9 +156,18 @@ def pitch_track(x: np.ndarray, sr: int, f0_min=60.0, f0_max=600.0, hop=240):
 
 
 def pitch_error_cents(dry: np.ndarray, wet: np.ndarray, sr: int, pitch_ratio: float) -> float:
-    """Median deviation of the achieved pitch shift, in cents."""
+    """Median deviation of the achieved pitch shift, in cents.
+
+    Both signals are tracked with the same *number of periods* per analysis
+    frame rather than the same number of samples.  Otherwise the shifted
+    signal is measured with a systematically different effective window, and
+    on a moving pitch contour that bias alone is worth ~13 cents -- which a
+    perfect shifter would also score, making the metric unable to distinguish
+    the engine from its own measurement floor.
+    """
     pos, f_in = pitch_track(dry, sr)
-    _, f_out = pitch_track(wet, sr)
+    _, f_out = pitch_track(wet, sr, f0_min=60.0 * pitch_ratio,
+                           f0_max=600.0 * pitch_ratio)
     n = min(f_in.size, f_out.size)
     both = (f_in[:n] > 0) & (f_out[:n] > 0)
     if not np.any(both):
@@ -201,3 +210,164 @@ def unvoiced_error_db(dry: np.ndarray, wet: np.ndarray, mask: np.ndarray,
             lb = np.convolve(20 * np.log10(b[band]), smooth, mode="valid")
             errors.append(np.sqrt(np.mean((la - lb) ** 2)))
     return float(np.mean(errors)) if errors else float("nan")
+
+
+# --------------------------------------------------------------------------
+# Boundary behaviour.
+#
+# Every metric above is measured on steady audio: a sustained vowel, or an
+# utterance averaged whole.  An audit found that engine variants with visibly
+# different onset and creak behaviour produced byte-identical numbers from all
+# of them, because the places the engine misbehaves are exactly the places
+# those metrics erode or average away.  These three look at the handovers.
+# --------------------------------------------------------------------------
+
+
+def trace_marks(audio: np.ndarray, sample_rate: int, profile, block: int = 512):
+    """Run the engine and return its analysis pitch marks.
+
+    Reaching into the engine is deliberate.  What goes wrong at a boundary is
+    that audio takes the unvoiced path when it should have taken the voiced
+    one, and the mark trace says so directly; inferring it from the output
+    means guessing.
+
+    Positions are returned in *input* coordinates.  The engine primes its
+    buffers with one latency of silence so that output sample 0 lines up with
+    input sample 0, which puts its internal positions one latency ahead.
+    """
+    import natvox
+
+    changer = natvox.VoiceChanger(sample_rate, profile)
+    seen = {}
+    for i in range(0, audio.size, block):
+        changer.process(audio[i:i + block])
+        # The list is pruned from the front between blocks, so an index cursor
+        # would skip marks; collecting into a dict by position is immune to it.
+        for mark in changer._marks:
+            seen[mark.position] = bool(mark.voiced)
+    changer.flush()
+    for mark in changer._marks:
+        seen[mark.position] = bool(mark.voiced)
+    offset = changer.latency_samples
+    return [(position - offset, voiced) for position, voiced in sorted(seen.items())]
+
+
+def onset_lag_ms(audio: np.ndarray, sample_rate: int, profile, onsets,
+                 window_ms: float = 80.0, block: int = 512):
+    """Milliseconds from each true vowel onset to the first voiced mark.
+
+    Pitch tracking needs a couple of periods before it can call a frame
+    voiced, so the start of every syllable is at risk of leaving on the
+    unvoiced path - unshifted, at the speaker's own pitch.  At 1-2 periods per
+    onset this is audible as a pitch scoop into every syllable.
+    """
+    marks = trace_marks(audio, sample_rate, profile, block)
+    limit = int(window_ms * sample_rate / 1000)
+    lags = []
+    for onset in onsets:
+        found = next((p for p, voiced in marks if voiced and onset <= p <= onset + limit), None)
+        lags.append(1000.0 * (found - onset) / sample_rate if found is not None else np.nan)
+    lags = np.array(lags, dtype=float)
+    return float(np.nanmean(lags)), float(np.nanmax(lags))
+
+
+def creak_voicing(audio: np.ndarray, sample_rate: int, profile, region,
+                  block: int = 512):
+    """How much of a creaky phrase-end stays on the voiced path.
+
+    Returns (share of the region's duration marked unvoiced, number of
+    voiced/unvoiced flips).  Both should be near zero: creak is unmistakably a
+    voice, and audio that falls to the unvoiced path comes out at the
+    speaker's original pitch, so a phrase ending in creak reverts to their
+    real voice exactly where a listener is most likely to notice.
+    """
+    marks = trace_marks(audio, sample_rate, profile, block)
+    start, stop = region
+    inside = [(p, v) for p, v in marks if start <= p < stop]
+    if not inside:
+        return float("nan"), 0
+    unvoiced = sum(1 for _, v in inside if not v)
+    flips = sum(1 for a, b in zip(inside, inside[1:]) if a[1] != b[1])
+    return unvoiced / len(inside), flips
+
+
+def onset_pitch_error_st(dry: np.ndarray, wet: np.ndarray, sample_rate: int,
+                         pitch_ratio: float, onsets, window_ms: float = 25.0):
+    """Worst deviation from the intended pitch in the first moments of a syllable.
+
+    A syllable whose first 20 ms come out at the wrong pitch and then snap to
+    the right one is heard as a scoop or a catch in the voice, even though a
+    whole-utterance pitch average would call it correct.
+    """
+    span = int(window_ms * sample_rate / 1000)
+    errors = []
+    for onset in onsets:
+        lo, hi = onset, min(onset + span, min(dry.size, wet.size))
+        if hi - lo < span // 2:
+            continue
+        # Autocorrelation over the short window; a tracker would need more
+        # audio than the window contains.
+        def period(seg):
+            seg = seg - seg.mean()
+            if np.sqrt(np.mean(seg * seg)) < 1e-4:
+                return None
+            spec = np.fft.rfft(seg, 4 * seg.size)
+            acf = np.fft.irfft(np.abs(spec) ** 2)[:seg.size]
+            lo_lag = int(sample_rate / 500)
+            hi_lag = min(int(sample_rate / 60), seg.size - 1)
+            if hi_lag <= lo_lag:
+                return None
+            return lo_lag + int(np.argmax(acf[lo_lag:hi_lag]))
+
+        a, b = period(dry[lo:hi]), period(wet[lo:hi])
+        if a and b:
+            achieved = a / b
+            errors.append(abs(12.0 * np.log2(achieved / pitch_ratio)))
+    return float(np.median(errors)) if errors else float("nan")
+
+
+def jitter_shimmer(audio: np.ndarray, sample_rate: int, f0_hint: float,
+                   region=None):
+    """Local jitter (period-to-period) and shimmer (amplitude), as fractions.
+
+    Natural voices vary by roughly 0.3-1% in period and a few percent in
+    amplitude from one glottal pulse to the next.  That variation is not a
+    defect to be cleaned up: a voice reproduced with *less* of it than the
+    speaker has sounds synthetic, which is the oldest robot tell there is.
+
+    Measured with the same phase-locked correlation the engine uses to place
+    its marks rather than with a glottal-closure detector.  A closure detector
+    is the textbook choice and is accurate on natural speech, but PSOLA output
+    carries secondary peaks from grain reuse that it mistakes for closures.
+    """
+    from natvox.dsp.epochs import EpochTracker
+    from natvox.dsp.util import RingBuffer
+
+    start, stop = region or (0, audio.size)
+    buf = RingBuffer(max(1 << 15, audio.size + 16))
+    buf.push(np.asarray(audio, dtype=np.float64))
+    period = sample_rate / f0_hint
+    tracker = EpochTracker()
+
+    mark = tracker.bootstrap(buf, start + int(period), period)
+    periods, amplitudes = [], []
+    while mark + 2 * period < stop:
+        nxt = tracker.locate(buf, mark + int(round(period)), mark, period)
+        gap = nxt - mark
+        if gap < 0.5 * period or gap > 1.8 * period:
+            break
+        periods.append(gap)
+        segment = audio[mark:nxt]
+        amplitudes.append(float(np.max(np.abs(segment))) if segment.size else 0.0)
+        mark = nxt
+
+    if len(periods) < 8:
+        return float("nan"), float("nan")
+    periods = np.array(periods, dtype=float)
+    amplitudes = np.array(amplitudes, dtype=float)
+    jitter = float(np.mean(np.abs(np.diff(periods))) / np.mean(periods))
+    amplitudes = amplitudes[amplitudes > 0]
+    if amplitudes.size < 8:
+        return jitter, float("nan")
+    shimmer = float(np.mean(np.abs(np.diff(np.log(amplitudes)))))
+    return jitter, shimmer

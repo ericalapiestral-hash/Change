@@ -26,11 +26,19 @@ from .util import WINDOWS, resample_grain
 
 @dataclass(frozen=True)
 class Mark:
-    """One analysis pitch mark."""
+    """One analysis pitch mark.
+
+    ``deviation`` is how far the real glottal pulse sat from where the
+    smoothed pitch estimate predicted it.  It is the speaker's own
+    period-to-period irregularity, measured for free while phase-locking the
+    mark, and carrying it through to synthesis is what stops the output being
+    more perfectly periodic than the voice that went in.
+    """
 
     position: int
     period: float
     voiced: bool
+    deviation: float = 0.0
 
 
 def grain_half_length(period: float, pitch_ratio: float, formant_ratio: float,
@@ -38,23 +46,35 @@ def grain_half_length(period: float, pitch_ratio: float, formant_ratio: float,
     """Half-length of the grain window, in samples.
 
     One period either side of the mark is the textbook choice and is what
-    preserves the spectral envelope.  It is widened only when the synthesis
-    spacing would otherwise exceed the grain, which would leave audible gaps
-    between grains -- lowering pitch while raising formants is the case that
-    needs it.  Widening costs a mild comb colouration; a gap costs a buzz.
+    preserves the spectral envelope.  It is widened when the formant ratio
+    outruns the pitch ratio -- lowering pitch while raising formants is the
+    case that reaches it.
+
+    What the widening buys is not, as it first appears, the avoidance of gaps
+    between grains: the spacing only exceeds the grain when
+    ``formant_ratio / (2 * pitch_ratio) > 1``, which no shipped preset comes
+    near.  What it actually buys is a flatter summed window for overlap-add to
+    divide by.  That was established by measurement rather than argument, and
+    the measurement contradicted the theory: forcing the scale back to the
+    textbook 1.0 makes the output worse on both spectral envelope error
+    (3.2 -> 5.0 dB) and inharmonic energy (-57.9 -> -54.7 dB).  The cap is a
+    real three-way trade between envelope accuracy, inharmonic energy and
+    latency; 1.6 was measured, not assumed.
     """
     scale = min(max(1.0, formant_ratio / max(pitch_ratio, 1e-6)), max_scale)
     return max(8, int(round(period * scale)))
 
 
 def build_grain(view, mark: int, half: int, formant_ratio: float,
-                fractional_delay: float = 0.0):
+                fractional_delay: float = 0.0, resampler=None):
     """Window a grain around ``mark``, resample it, and shift it sub-sample.
 
     Returns ``(grain, window)``; the window is handed to the accumulator so
     overlap-add can normalise by how much coverage each output sample got.
     ``fractional_delay`` is the part of the target position that falls between
-    samples -- see :func:`natvox.dsp.util.resample_grain` for why it matters.
+    samples -- see :mod:`natvox.dsp.resample` for why it matters.  ``resampler``
+    is the engine's prebuilt kernel; without one a cached kernel is looked up
+    by ratio, which is fine outside the real-time path.
     """
     length = 2 * half
     raw = view(mark - half, mark + half)
@@ -67,7 +87,11 @@ def build_grain(view, mark: int, half: int, formant_ratio: float,
 
     # Shorter grain -> spectrum stretched upward -> formants raised.
     out_len = length if same_length else max(8, int(round(length / formant_ratio)))
-    return resample_grain(grain, out_len, fractional_delay), WINDOWS.get(out_len)
+    if resampler is not None:
+        resampled = resampler(grain, out_len, fractional_delay)
+    else:
+        resampled = resample_grain(grain, out_len, fractional_delay)
+    return resampled, WINDOWS.get(out_len)
 
 
 def nearest_mark(marks, position: float, start_hint: int = 0) -> int:

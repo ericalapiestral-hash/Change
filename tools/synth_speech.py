@@ -174,3 +174,145 @@ if __name__ == "__main__":
     audio, truth = utterance()
     sf.write("utterance.wav", audio, truth["sample_rate"])
     print("wrote utterance.wav", audio.shape)
+
+
+# --------------------------------------------------------------------------
+# Transient- and boundary-isolating signals.
+#
+# The utterance above exercises the engine's steady state.  These isolate the
+# places where it hands over between its two code paths, which is where an
+# audit found the real defects: the first pitch periods of a vowel, and a
+# phrase falling into creak.  Steady-vowel metrics are blind to both.
+# --------------------------------------------------------------------------
+
+
+def plosive_burst(sr: int = 48000, milliseconds: float = 3.0, kind: str = "t",
+                  seed: int = 11) -> np.ndarray:
+    """A stop release: near-instant attack, few-millisecond decay.
+
+    Shorter than a single grain, which is what makes it a hard case: a burst
+    that straddles two grains can be displaced differently by each.
+    """
+    from scipy import signal
+
+    n = int(sr * milliseconds / 1000.0)
+    rng = np.random.default_rng(seed)
+    bands = {"t": (2000.0, 9000.0), "p": (300.0, 2500.0), "k": (1200.0, 4000.0)}
+    lo, hi = bands.get(kind, bands["t"])
+    sos = signal.butter(2, [lo / (sr / 2), hi / (sr / 2)], btype="bandpass", output="sos")
+    x = signal.sosfilt(sos, rng.normal(0, 1, n))
+    decay = np.exp(-np.arange(n) / (0.30 * n))
+    rise = int(0.03 * n) + 1
+    decay[:rise] *= np.linspace(0, 1, rise)
+    x *= decay
+    return x / max(np.max(np.abs(x)), 1e-9)
+
+
+def onset_train(sr: int = 48000, f0: float = 120.0, syllables: int = 8,
+                vowel_ms: float = 180.0, gap_ms: float = 120.0,
+                attack_ms: float = 6.0, seed: int = 3):
+    """Repeated vowel onsets separated by silence, with their exact start times.
+
+    Pitch tracking cannot declare voicing until it has seen a couple of
+    periods, so the first moments of every syllable are the engine's weakest
+    point.  Repeating the onset makes the effect measurable rather than
+    anecdotal.
+    """
+    rng = np.random.default_rng(seed)
+    gap = int(sr * gap_ms / 1000)
+    vn = int(sr * vowel_ms / 1000)
+    n = gap + syllables * (vn + gap)
+    contour = np.zeros(n)
+    envelope = np.zeros(n)
+    onsets = []
+    pos = gap
+    for _ in range(syllables):
+        contour[pos:pos + vn] = f0
+        attack = max(1, int(sr * attack_ms / 1000))
+        envelope[pos:pos + attack] = np.linspace(0, 1, attack)
+        envelope[pos + attack:pos + vn] = 1.0
+        release = max(1, int(0.03 * sr))
+        envelope[pos + vn - release:pos + vn] *= np.linspace(1, 0, release)
+        onsets.append(pos)
+        pos += vn + gap
+
+    source = glottal_source(contour, sr, rng, jitter=0.0, shimmer=0.0)
+    tracks = np.stack([np.full(n, f) for f in VOWELS["a"]])
+    y = vocal_tract(source, tracks, sr)
+    y /= max(np.max(np.abs(y)), 1e-9)
+    x = 0.5 * y * envelope + rng.normal(0, 2e-5, n)
+    return x, {"sample_rate": sr, "onsets": onsets, "f0": f0, "vowel_samples": vn}
+
+
+def creak_fall(sr: int = 48000, f0_start: float = 130.0, f0_end: float = 55.0,
+               lead_ms: float = 100.0, steady_ms: float = 400.0,
+               fall_ms: float = 500.0, seed: int = 3):
+    """A phrase falling into creak: pitch glides down, periods turn irregular.
+
+    Almost every sentence ends this way.  It is the hardest thing to keep on
+    the voiced path, because periodicity collapses while the sound is still
+    unmistakably a voice - and if it falls off that path, the listener hears
+    the speaker's own pitch return at the end of every sentence.
+    """
+    lead = int(sr * lead_ms / 1000)
+    steady = int(sr * steady_ms / 1000)
+    fall = int(sr * fall_ms / 1000)
+    n = lead + steady + fall + int(0.2 * sr)
+
+    contour = np.zeros(n)
+    contour[lead:lead + steady] = f0_start
+    contour[lead + steady:lead + steady + fall] = np.geomspace(f0_start, f0_end, fall)
+    source = glottal_source(contour, sr, np.random.default_rng(seed),
+                            jitter=0.0, shimmer=0.0)
+
+    # Re-pulse the falling section with heavy period and amplitude jitter; that
+    # irregularity is what creak *is*, and what defeats a periodicity test.
+    irregular = np.zeros(n)
+    rng = np.random.default_rng(seed + 1)
+    pos = lead + steady
+    while pos < lead + steady + fall:
+        period = max(8, int(round(sr / contour[pos] * (1.0 + rng.normal(0, 0.10)))))
+        pulse = rosenberg_pulse(period) * (1.0 + rng.normal(0, 0.25))
+        take = min(period, n - pos)
+        irregular[pos:pos + take] += pulse[:take]
+        pos += period
+    source[lead + steady:] = np.diff(irregular, prepend=0.0)[lead + steady:]
+
+    tracks = np.stack([np.full(n, f) for f in VOWELS["a"]])
+    y = vocal_tract(source, tracks, sr)
+    y /= max(np.max(np.abs(y)), 1e-9)
+
+    envelope = np.ones(n)
+    envelope[:lead] = 0.0
+    ramp = int(0.02 * sr)
+    envelope[lead:lead + ramp] = np.linspace(0, 1, ramp)
+    envelope[lead + steady + fall:] = 0.0
+    envelope[lead + steady + fall - ramp:lead + steady + fall] = np.linspace(1, 0, ramp)
+    x = 0.5 * y * envelope + np.random.default_rng(seed + 3).normal(0, 2e-5, n)
+    return x, {"sample_rate": sr, "steady": (lead, lead + steady),
+               "creak": (lead + steady, lead + steady + fall)}
+
+
+def human_vowel(sr: int = 48000, f0: float = 120.0, seconds: float = 1.2,
+                jitter: float = 0.0045, shimmer: float = 0.035,
+                vowel: str = "a", seed: int = 5):
+    """A sustained vowel with a real voice's own irregularity.
+
+    The steady vowel used for artifact measurement is deliberately perfect --
+    jitter and shimmer set to zero -- so that anything imperfect in the output
+    must have come from the engine.  That makes it blind to the opposite
+    failure: an engine that hands back a voice *more* regular than the speaker,
+    which is what a listener calls robotic.  This signal carries the 0.45%
+    period and 3.5% amplitude variation of ordinary phonation so that loss of
+    it can be measured.
+    """
+    n = int(sr * seconds)
+    source = glottal_source(np.full(n, f0), sr, np.random.default_rng(seed),
+                            jitter=jitter, shimmer=shimmer)
+    tracks = np.stack([np.full(n, f) for f in VOWELS[vowel]])
+    y = vocal_tract(source, tracks, sr)
+    y /= max(np.max(np.abs(y)), 1e-9)
+    fade = int(0.02 * sr)
+    y[:fade] *= np.linspace(0, 1, fade)
+    y[-fade:] *= np.linspace(1, 0, fade)
+    return 0.5 * y

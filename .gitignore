@@ -10,3 +10,7 @@ build/
 *.wav
 !tests/data/*.wav
 out/
+
+# Web front end
+node_modules/
+package-lock.json

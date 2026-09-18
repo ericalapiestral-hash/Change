@@ -15,6 +15,15 @@ natvox process in.wav out.wav --preset male_to_female
 natvox live --preset male_to_female            # microphone -> output
 ```
 
+Or run it live in a browser, with an interface built for judging whether it
+sounds converted - instant A/B against a delay-matched dry signal, a loop
+recorder, and a pitch histogram for setting the one parameter that matters
+most:
+
+```bash
+cd web && npm start        # http://127.0.0.1:8080/ - use headphones
+```
+
 ## How it avoids sounding synthetic
 
 | What gives voice changers away | Cause | What this does instead |
@@ -30,8 +39,19 @@ glottal pulse. Placing those pulses further apart lowers the pitch without
 touching the timbre; squeezing each one in time raises the formants without
 touching the pitch. No filtering, no spectral envelope to estimate wrongly.
 
-Getting that to sound clean turned out to be mostly about four details that do
-not show up in textbook descriptions:
+Four more defects only showed up once the engine was audited against signals
+built to provoke them, and none of them were visible to the metrics that
+existed at the time:
+
+| What it sounded like | What was happening |
+|---|---|
+| A vowel turning to noise, on a female voice | Pitch tracking read 250-265 Hz an octave high, because the first-dip rule can take a shallow dip at half the true period. That band is ordinary female speech - exactly what the female-to-male preset is for. HNR fell to 2 dB |
+| The voice reverting to its own pitch at the end of every sentence | Almost every phrase ends in creak, whose irregular periods defeat a periodicity test. 46-82% of it was leaving on the unvoiced path, unconverted |
+| A pitch scoop into every syllable | Pitch tracking cannot call a frame voiced until it has seen a couple of periods, so the first 20-30 ms of each syllable left unshifted |
+| Too clean to be a person | The engine returned a voice *more* periodic than the speaker: jitter cut to 0.6x, harmonics-to-noise pushed above the input's own. Over-regularity is the oldest robot tell there is |
+
+Getting the basics right came down to four details that do not show up in
+textbook descriptions:
 
 - **Grain positions need sub-sample precision.** Rounding them to whole samples
   jitters the synthesis period by up to half a sample, which alone puts a noise
@@ -50,33 +70,44 @@ not show up in textbook descriptions:
 
 ## Measured
 
-Against a synthesised utterance and a steady vowel with known ground truth
-(`python tools/bench.py`):
+Against synthesised signals with known ground truth (`python tools/bench.py`):
 
-| preset | pitch | formant | latency | CPU | pitch error | envelope error | inharmonic | HNR |
-|---|---|---|---|---|---|---|---|---|
-| brighter | +1.5 st | +1.0 st | 41 ms | 7.5% | 7.6 ¢ | 0.67 dB | −55.2 dB | 36.8 dB |
-| younger | +3.0 st | +2.2 st | 41 ms | 7.5% | 7.0 ¢ | 0.86 dB | −55.0 dB | 31.1 dB |
-| deeper | −2.5 st | −1.2 st | 48 ms | 8.8% | 9.1 ¢ | 0.64 dB | −55.1 dB | 40.4 dB |
-| male_to_female | +7.0 st | +2.6 st | 43 ms | 9.0% | 7.9 ¢ | — ¹ | −45.2 dB | 43.1 dB |
-| female_to_male | −7.0 st | −2.6 st | 36 ms | 7.1% | 16.0 ¢ | 1.58 dB | −55.1 dB | 35.5 dB |
+| preset | pitch | formant | latency | CPU | envelope | inharmonic | HNR | onset | creak | jitter |
+|---|---|---|---|---|---|---|---|---|---|---|
+| brighter | +1.5 st | +1.0 st | 58 ms | 10% | 0.68 dB | −55.1 dB | 36.7 dB | 19 ms | 2% | 1.02× |
+| younger | +3.0 st | +2.2 st | 58 ms | 9% | 0.76 dB | −55.3 dB | 31.1 dB | 19 ms | 2% | 1.22× |
+| deeper | −2.5 st | −1.2 st | 67 ms | 10% | 0.97 dB | −55.4 dB | 41.8 dB | 20 ms | 0% | 0.97× |
+| male_to_female | +7.0 st | +2.6 st | 61 ms | 17% | — ¹ | −45.6 dB ¹ | 42.7 dB | 18 ms | 0% | 1.08× |
+| female_to_male | −7.0 st | −2.6 st | 50 ms | 9% | 1.64 dB | −55.1 dB | 35.6 dB | 14 ms | 1% | 1.48× |
 
-¹ this preset mixes in aspiration noise on purpose, which the envelope metric
-counts as error.
+¹ this preset mixes in aspiration noise on purpose, which both the envelope and
+inharmonic metrics count as error.
 
-**Inharmonic** is energy that is not at a harmonic of the output pitch — buzz,
+**Inharmonic** is energy that is not at a harmonic of the output pitch - buzz,
 roughness, sidebands and aliasing all land there, and it tracks "sounds
 robotic" most directly. A natural voice's own jitter sits around −25 dB, so at
 −55 dB the engine adds far less than the speaker does. **HNR** above 25 dB is
-already cleaner than a typical human voice (15–25 dB).
+already cleaner than a typical human voice (15-25 dB).
+
+The last three columns exist because the first ones could not see the defects
+in the table above. **Onset** is how long after a real vowel onset the engine
+starts converting it (was 22-31 ms). **Creak** is the share of a creaky
+phrase-end that leaves unconverted (was 46-82%). **Jitter** is the
+period-to-period irregularity returned as a multiple of a human-like input's
+own; under 1.0 means the voice came back more perfect than the speaker (was
+0.52-0.75×).
 
 Other properties the test suite pins down:
 
 - Consonants pass through at **−69 dB** residual (bit-exact) unless you ask for
   them to be shifted.
-- Output is **independent of block size** — 64 frames or 4096 gives the same
-  result to within float noise, which matters because a real-time caller does
-  not choose its block size.
+- Output is **bit-identical across block sizes** - 32 frames or 4096 gives
+  exactly the same samples, which matters because a real-time caller does not
+  choose its block size.
+- Pitch tracking is correct on **355 of 355** combinations of vowel, pitch and
+  configured range.
+- The browser engine matches the Python one to better than **−100 dB** on
+  speech, creak and noise across six presets.
 - Grain-rate modulation on fricatives stays within 3 dB of the input's own.
 
 ## Latency
@@ -90,13 +121,24 @@ the lowest pitch it must track. `f0_min` is therefore the main latency control.
 
 | `f0_min` | engine latency | suits |
 |---|---|---|
-| 65 Hz | ~50 ms | deep male voices |
-| 75 Hz (default) | ~41 ms | most male voices |
-| 110 Hz | ~36 ms | female voices |
-| 140 Hz | ~31 ms | high voices, lowest latency |
+| 65 Hz | ~67 ms | deep male voices |
+| 75 Hz (default) | ~58 ms | most male voices |
+| 110 Hz | ~50 ms | female voices |
+| 140 Hz | ~44 ms | high voices, lowest latency |
 
 Setting `f0_min` above a speaker's actual range causes octave errors, which
-sound far worse than latency. Measure before tightening it.
+sound far worse than latency. The browser interface plots your measured pitch
+range and will set it for you; measure before tightening it by hand.
+
+The second knob is `onset_lookahead_ms` (default 8). Pitch tracking is
+inherently retrospective, so without it the first 20-30 ms of every syllable
+leaves unconverted. Setting it to zero returns roughly 8 ms of latency and
+those syllable-initial pitch errors with it.
+
+About three quarters of the delay is not a tuning choice: PSOLA needs two
+periods of the lowest pitch tracked, and pitch tracking needs a couple more
+before it can honestly call a frame voiced. The engine runs at under 20% of one
+core, so this is not a speed problem and cannot be solved by a faster machine.
 
 ## Presets
 
@@ -169,8 +211,10 @@ reconstructs to −322 dB. It has **not** been run against a real checkpoint.
 
 ```bash
 pip install -e '.[dev]'
-pytest                      # 126 tests
+pytest                      # 151 tests
 python tools/bench.py       # artifact measurements
+
+cd web && npm install && npm test     # 75 more, including the browser
 ```
 
 `tools/synth_speech.py` generates the reference utterance: a source-filter
@@ -188,11 +232,20 @@ off" is a statement that can be checked rather than an impression.
 - **Whispering has no pitch to shift.** It routes through the unvoiced path and
   comes out close to unchanged.
 - **Heavy background noise confuses voicing detection.** Noise-gate first.
-- **Real-time output has not been verified on audio hardware here** — this
-  environment has no PortAudio. The callback logic is tested against simulated
-  device behaviour (jittery block sizes, multichannel, float32) but the
-  PortAudio binding itself is untested against a real device.
+- **Latency is 50-67 ms**, and about three quarters of it is structural rather
+  than a tuning choice. That is usable for conversation but not negligible;
+  `f0_min` and `onset_lookahead_ms` are the knobs, and both trade against
+  quality.
+- **No audio hardware was available here.** The browser build is tested end to
+  end through the real AudioWorklet, but on an offline render rather than a
+  live device; the Python `sounddevice` binding is untested against real
+  hardware because this environment has no PortAudio.
 - **Real speech has not been tested** — only synthesised reference signals,
   which is what makes the measurements meaningful but is not the same thing.
-  Run `tools/bench.py` ideas against your own recordings before trusting the
-  numbers for your voice.
+  Run `tools/bench.py` against your own recordings before trusting the numbers
+  for your voice; the browser interface's capture-and-loop is the fastest way
+  to hear the difference on your own.
+- **Shimmer is still flattened** on upward shifts (amplitude variation returns
+  at about 0.55x of the input), because repeating a grain repeats its
+  amplitude. The timing half of the same problem is fixed; this half is
+  measured and left.
