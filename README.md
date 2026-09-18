@@ -290,6 +290,24 @@ Flat or slightly better at the large shifts on a sustained vowel; on connected
 speech the envelope error climbs gently and monotonically to 1.1 dB, against
 the 7.6 dB that aspiration costs on the `female` preset.
 
+#### Let the ear pick
+
+Neither the threshold nor the target is a fact about your voice, and both of
+them are asking a question nobody can answer from a slider: *is +9.5 semitones
+too much?* So don't answer it. Say a sentence and take a ladder:
+
+```bash
+natvox-cli.exe --ladder          # or "Save a pitch ladder" in the window
+```
+
+It renders what you just said six times — landing at 150, 165, 180, 195, 210
+and 225 Hz — and writes them out numbered so they play in order. Play them and
+pick the first one that sounds right. *Which of these sounds like a woman* is a
+question you can answer.
+
+The rungs are landing pitches rather than shifts, and the tract shift is the
+same on every one, so what varies between them is exactly one thing.
+
 **The threshold stays where it is anyway**, because not one of those
 measurements can hear. It is a warning rather than a wall, and the warning now
 says the degradation is gradual and to listen before believing it either way.
@@ -638,7 +656,7 @@ reconstructs to −322 dB. It has **not** been run against a real checkpoint.
 
 ```bash
 pip install -e '.[dev]'
-pytest                      # 623 tests
+pytest                      # 630 tests
 python tools/bench.py       # artifact measurements
 
 cd web && npm install && npm test     # 127 more, including the live path

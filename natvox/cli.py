@@ -284,32 +284,14 @@ def cmd_tune(args) -> int:
     those is a woman's pitch.  This measures instead.
     """
     from .app import voiceprint
-    from .app.backend import AudioUnavailable, _sounddevice, rate_mismatch
 
     seconds = args.seconds if args.seconds is not None else 8.0
     target = args.target if args.target is not None else voiceprint.FEMALE_TARGET_HZ
-    try:
-        sd = _sounddevice()
-    except AudioUnavailable as exc:
-        print(str(exc), file=sys.stderr)
-        return 1
-    device = _device_arg(args.input_device)
-    note = rate_mismatch(device, None, args.rate)
-    if note:
-        print(f"note: {note}", file=sys.stderr)
-
-    print(f"talk normally for {seconds:.0f} seconds -- a couple of sentences, "
-          "in your ordinary voice", file=sys.stderr)
-    try:
-        recorded = sd.rec(int(seconds * args.rate), samplerate=args.rate,
-                          channels=1, dtype="float32", device=device,
-                          latency=args.latency)
-        sd.wait()
-    except Exception as exc:                    # noqa: BLE001 - as elsewhere
-        print(f"could not record: {exc}", file=sys.stderr)
+    recorded = _record(args, seconds)
+    if recorded is None:
         return 1
 
-    voice = voiceprint.measure(np.asarray(recorded).reshape(-1), args.rate)
+    voice = voiceprint.measure(recorded, args.rate)
     suggestion = voiceprint.suggest(voice, target,
                                     _profile_from_args(args))
     print(suggestion.summary())
@@ -323,6 +305,64 @@ def cmd_tune(args) -> int:
     return 0
 
 
+def cmd_ladder(args) -> int:
+    """Record once, render it at a spread of pitches, and let the ear decide.
+
+    "Which of these sounds like a woman" is a question somebody can answer.
+    "Is +9.5 semitones too much" is not, and it is the one the sliders ask.
+    """
+    from pathlib import Path
+
+    from .app.core import Settings, Studio
+
+    seconds = args.seconds if args.seconds is not None else 8.0
+    recorded = _record(args, seconds)
+    if recorded is None:
+        return 1
+    studio = Studio(Settings(voice=args.preset or "female",
+                             sample_rate=args.rate))
+    voice, rungs = studio.ladder(audio=recorded)
+    print(voice.summary())
+    if not voice.usable:
+        return 1
+    folder = Path(args.into) if args.into else Path.cwd() / "natvox-ladder"
+    written = studio.save_ladder(folder, rungs)
+    print(f"\n{len(written)} files in {folder}:")
+    for rung in rungs:
+        print(f"  {rung.hz:5.0f} Hz   pitch {rung.semitones:+5.1f} st")
+    print("\nPlay them in order and pick the first that sounds right, then:")
+    print(f"  natvox live --pitch <that one> --formant "
+          f"{rungs[0].profile.formant_semitones:.1f} "
+          f"-p {args.preset or 'female'}")
+    return 0
+
+
+def _record(args, seconds: float):
+    """Record from the microphone, or explain why not."""
+    from .app.backend import AudioUnavailable, _sounddevice, rate_mismatch
+
+    try:
+        sd = _sounddevice()
+    except AudioUnavailable as exc:
+        print(str(exc), file=sys.stderr)
+        return None
+    device = _device_arg(args.input_device)
+    note = rate_mismatch(device, None, args.rate)
+    if note:
+        print(f"note: {note}", file=sys.stderr)
+    print(f"talk normally for {seconds:.0f} seconds -- a couple of sentences, "
+          "in your ordinary voice", file=sys.stderr)
+    try:
+        recorded = sd.rec(int(seconds * args.rate), samplerate=args.rate,
+                          channels=1, dtype="float32", device=device,
+                          latency=args.latency)
+        sd.wait()
+    except Exception as exc:                    # noqa: BLE001 - as elsewhere
+        print(f"could not record: {exc}", file=sys.stderr)
+        return None
+    return np.asarray(recorded).reshape(-1)
+
+
 def cmd_app(args) -> int:
     from .app.core import Studio
 
@@ -330,6 +370,8 @@ def cmd_app(args) -> int:
         return print_devices()
     if args.loopback:
         return cmd_loopback(args)
+    if args.ladder:
+        return cmd_ladder(args)
     if args.tune:
         return cmd_tune(args)
     if args.check:
@@ -412,6 +454,12 @@ def build_parser() -> argparse.ArgumentParser:
                      help="measure your own voice and work out the shift it "
                           "needs; the presets are a guess about a speaker "
                           "nobody has heard")
+    app.add_argument("--ladder", action="store_true",
+                     help="record once, render it at six pitches, and let your "
+                          "ear pick; 'which sounds like a woman' is a question "
+                          "you can answer, '+9.5 st' is not")
+    app.add_argument("--into", metavar="DIR",
+                     help="where --ladder writes its files")
     app.add_argument("--target", type=float, default=None, metavar="HZ",
                      help="pitch to aim --tune at (default: a female median)")
     app.add_argument("--seconds", type=float, default=None,

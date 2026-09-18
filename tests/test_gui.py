@@ -344,6 +344,26 @@ class TestAnswers:
         assert window._readouts["pitch_semitones"].text() == f"{after:.1f}"
         window.stop()
 
+    def test_a_ladder_before_anything_was_said_explains_itself(self, window):
+        window.save_ladder()
+        assert "say a couple of sentences" in window.status.text()
+
+    def test_a_ladder_writes_one_file_per_rung(self, window, tmp_path, monkeypatch):
+        from natvox.app.core import LADDER_HZ
+
+        monkeypatch.setattr(QtWidgets.QFileDialog, "getExistingDirectory",
+                            staticmethod(lambda *a, **k: str(tmp_path)))
+        window.start()
+        pump(2.0)
+        window.save_ladder()
+        assert wait_for(lambda: "rendering" not in window.status.text(), 60.0), \
+            window.status.text()
+        window.stop()
+        written = sorted(tmp_path.glob("*.wav"))
+        assert len(written) == len(LADDER_HZ)
+        assert "150Hz" in written[0].name
+        assert "pick the first" in window.status.text()
+
     def test_saving_before_anything_was_said_explains_itself(self, window):
         window.save_capture()
         assert "Nothing recorded" in window.status.text()

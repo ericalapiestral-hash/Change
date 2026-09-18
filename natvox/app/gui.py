@@ -249,12 +249,18 @@ class Window(QtWidgets.QWidget):
         self.save.clicked.connect(self.save_capture)
         self.check = QtWidgets.QPushButton("Will this computer keep up?")
         self.check.clicked.connect(self.run_self_test)
+        self.ladder = QtWidgets.QPushButton("Save a pitch ladder")
+        self.ladder.setToolTip(
+            "The same thing you just said, at six pitches. Play them in order "
+            "and pick the first one that sounds right.")
+        self.ladder.clicked.connect(self.save_ladder)
         self.tune = QtWidgets.QPushButton("Fit it to my voice")
         self.tune.setToolTip(
             "Measures the pitch you have actually been speaking at and works "
             "out the shift it needs. The presets guess.")
         self.tune.clicked.connect(self.tune_to_voice)
-        for button in (self.power, self.ab, self.save, self.check, self.tune):
+        for button in (self.power, self.ab, self.save, self.check,
+                       self.tune, self.ladder):
             row.addWidget(button)
         return box
 
@@ -502,6 +508,32 @@ class Window(QtWidgets.QWidget):
         suggestion = self.studio.tune(apply=True)
         self._show_profile()
         self.report(suggestion.summary())
+
+    def save_ladder(self) -> None:
+        """Six renderings of the same sentence, to be chosen between by ear.
+
+        "Which of these sounds like a woman" is a question somebody can answer.
+        "Is +9.5 semitones too much" is not, and it is the one the sliders ask.
+        """
+        if self.studio.recent_input().size == 0:
+            self.report("Start it and say a couple of sentences first.")
+            return
+        folder = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Where to put the ladder", str(Path.home()))
+        if not folder:
+            return
+        self.report("rendering...")
+        self._worker.run(lambda: self._render_ladder(folder))
+
+    def _render_ladder(self, folder):
+        voice, rungs = self.studio.ladder()
+        if not voice.usable:
+            return voice
+        self.studio.save_ladder(folder, rungs)
+        return (voice.summary() + "\n"
+                + f"  {len(rungs)} files in {folder} -- play them in order and "
+                  "pick the first that sounds right, then set Pitch to the "
+                  "number in its name.")
 
     def save_capture(self) -> None:
         audio = self.studio.recent_input()

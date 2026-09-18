@@ -202,6 +202,24 @@ class _Metered:
         self._capture[:] = 0.0
 
 
+#: Landing pitches for :meth:`Studio.ladder`, in Hz.
+#:
+#: Spanning the reported male-female crossover (somewhere around 155-180 Hz)
+#: with room on both sides, so the answer can fall inside the range rather than
+#: at an end of it.
+LADDER_HZ = (150.0, 165.0, 180.0, 195.0, 210.0, 225.0)
+
+
+@dataclass
+class Rung:
+    """One step of a pitch ladder."""
+
+    hz: float
+    semitones: float
+    profile: object
+    audio: np.ndarray
+
+
 @dataclass
 class MachineReport:
     """Whether this computer can run it, measured rather than guessed."""
@@ -400,6 +418,47 @@ class Studio:
         return target
 
     # -- fitting the voice to the speaker ----------------------------------
+    def ladder(self, audio=None, targets=LADDER_HZ):
+        """The same sentence rendered at a spread of landing pitches.
+
+        By landing pitch and not by shift, because "which of these sounds like
+        a woman" is a question somebody can answer and "is +9.5 semitones too
+        much" is not.  The crossover where listeners stop hearing a voice as
+        male is a range rather than a number and is not measured anywhere in
+        this package; this is how a speaker finds their own.
+        """
+        from . import voiceprint
+
+        source = self.recent_input() if audio is None else np.asarray(audio)
+        voice = self.measure_voice(source)
+        base = self.profile()
+        rungs = []
+        for hz in targets:
+            shift = voice.shift_to(hz) if voice.usable else 0.0
+            profile = base.replace(
+                pitch_semitones=round(shift, 1),
+                formant_semitones=round(
+                    voiceprint.TRACT_SEMITONES
+                    if (base.formant_semitones or shift) >= 0
+                    else -voiceprint.TRACT_SEMITONES, 1),
+            )
+            rungs.append(Rung(hz, profile.pitch_semitones, profile,
+                              api.convert(source, self.settings.sample_rate,
+                                          profile)))
+        return voice, rungs
+
+    def save_ladder(self, folder, rungs) -> list[Path]:
+        """Write a ladder out, named so it plays in order and says what it is."""
+        target = Path(folder)
+        target.mkdir(parents=True, exist_ok=True)
+        written = []
+        for i, rung in enumerate(rungs, 1):
+            name = (f"{i:02d}-{rung.hz:.0f}Hz-"
+                    f"{rung.semitones:+.1f}st.wav".replace("+", "up"))
+            written.append(self.save_wav(target / name, rung.audio))
+        return written
+
+
     def measure_voice(self, audio=None):
         """What the speaker's own voice measures, from the loop recorder.
 

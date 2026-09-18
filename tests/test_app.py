@@ -306,6 +306,68 @@ def cable_at_44100(monkeypatch):
     return fake
 
 
+class TestThePitchLadder:
+    """Six renderings of the same sentence, to be chosen between by ear.
+
+    By landing pitch and not by shift, because "which of these sounds like a
+    woman" is a question somebody can answer and "is +9.5 semitones too much"
+    is not -- and it is the one the sliders ask.
+    """
+
+    @pytest.fixture
+    def said(self):
+        from bench import sustained
+
+        return np.concatenate([sustained(112.0, v, 0.6, 48000)
+                               for v in ("a", "i", "u", "e")])
+
+    def test_every_rung_lands_where_its_name_says(self, said):
+        from natvox.app.core import LADDER_HZ
+
+        studio = Studio(Settings(voice="female"))
+        voice, rungs = studio.ladder(audio=said)
+        assert [r.hz for r in rungs] == list(LADDER_HZ)
+        for rung in rungs:
+            landed = voice.median_hz * 2.0 ** (rung.semitones / 12.0)
+            assert landed == pytest.approx(rung.hz, rel=0.02)
+
+    def test_the_rungs_differ_from_each_other(self, said):
+        studio = Studio(Settings(voice="female"))
+        _, rungs = studio.ladder(audio=said)
+        shifts = [r.semitones for r in rungs]
+        assert shifts == sorted(shifts)
+        assert len(set(shifts)) == len(shifts)
+        first, last = rungs[0].audio, rungs[-1].audio
+        n = min(first.size, last.size)
+        assert not np.allclose(first[:n], last[:n]), "six copies of one file"
+
+    def test_the_tract_shift_is_the_same_on_every_rung(self, said):
+        """It is the voice being made, not a function of how far the pitch
+        went -- so it must not vary down the ladder."""
+        from natvox.app import voiceprint
+
+        studio = Studio(Settings(voice="female"))
+        _, rungs = studio.ladder(audio=said)
+        assert {r.profile.formant_semitones for r in rungs} == \
+            {voiceprint.TRACT_SEMITONES}
+
+    def test_the_files_are_named_so_they_play_in_order(self, said, tmp_path):
+        studio = Studio(Settings(voice="female"))
+        _, rungs = studio.ladder(audio=said)
+        written = studio.save_ladder(tmp_path / "ladder", rungs)
+        names = [p.name for p in written]
+        assert names == sorted(names), "so a file manager plays them in order"
+        assert all(p.exists() and p.stat().st_size > 1000 for p in written)
+        assert "150Hz" in names[0] and "225Hz" in names[-1]
+        assert "up" in names[0], "a + in a filename is a nuisance on Windows"
+
+    def test_nothing_said_is_an_empty_ladder_not_a_crash(self):
+        studio = Studio(Settings(voice="female"))
+        voice, rungs = studio.ladder(audio=np.zeros(48000))
+        assert not voice.usable
+        assert all(r.semitones == 0.0 for r in rungs)
+
+
 class TestRateMismatch:
     """A device at the wrong rate does not refuse -- the audio engine inserts
     a resampler, which costs delay and quality and says nothing at all."""
