@@ -58,6 +58,16 @@ PROBE_LEVEL = 0.25
 #: room for a cable that has eaten part of the band.
 MATCH_THRESHOLD = 0.3
 
+#: Silence played before the probe, so the stream is not brand new when it goes.
+#:
+#: Without it the probe sits at frame 0 of the array handed to the device and
+#: leaves in the stream's very first callback, microseconds after it opened.
+#: Whether that matters is an empirical question -- a driver that settles
+#: instantly gives the same answer either way -- so this is a knob rather than
+#: an assumption: measure with ``--warmup 0`` and with the default, and the
+#: difference is how much of the number was the stream still waking up.
+WARMUP_SECONDS = 0.25
+
 #: How far below the loudest moment of the recording the echo may be, in dB,
 #: before it stops being believed.
 #:
@@ -212,26 +222,40 @@ class RoundTrip:
 def measure(play_and_record, sample_rate: int, block_size: int = 256,
             attempts: int = 5, tail_seconds: float = 0.5,
             reported_ms: float = 0.0, engine_ms: float = 0.0,
-            note: str = "") -> RoundTrip:
+            note: str = "", warmup_seconds: float = WARMUP_SECONDS) -> RoundTrip:
     """Send the probe ``attempts`` times and time each echo.
 
     ``play_and_record(signal) -> recording`` does whatever opens the devices,
     so that everything above it can be tested without any.
+
+    The probe goes out after ``warmup_seconds`` of silence and that offset is
+    subtracted again, so the answer means the same thing whatever the warm-up
+    is -- which is what makes comparing two warm-ups a measurement rather than
+    a change of units.
     """
     sent = probe(sample_rate)
-    padded = np.concatenate([sent, np.zeros(int(tail_seconds * sample_rate))])
+    lead = max(0, int(max(0.0, warmup_seconds) * sample_rate))
+    padded = np.concatenate([np.zeros(lead), sent,
+                             np.zeros(int(tail_seconds * sample_rate))])
     delays = []
     for _ in range(max(1, attempts)):
         recording = np.asarray(play_and_record(padded), dtype=np.float64).reshape(-1)
         delay = estimate_delay(recording, sent, sample_rate)
-        if delay is not None:
+        if delay is None:
+            continue
+        delay -= lead / sample_rate
+        # An echo found before the probe was sent is not an echo.  Dropping it
+        # costs an attempt and says so in the count; keeping it would put a
+        # negative round trip into the median.
+        if delay >= 0.0:
             delays.append(delay * 1000.0)
     return RoundTrip(sample_rate, block_size, delays, reported_ms, engine_ms, note)
 
 
 def through_devices(input_device=None, output_device=None, sample_rate: int = 48000,
                     block_size: int = 256, attempts: int = 5, exclusive: bool = False,
-                    engine_ms: float = 0.0, latency="low") -> RoundTrip:
+                    engine_ms: float = 0.0, latency="low",
+                    warmup_seconds: float = WARMUP_SECONDS) -> RoundTrip:
     """Measure a real device pair.  Loop the output back to the input first.
 
     With a virtual cable that means selecting the cable's playback end as the
@@ -268,7 +292,7 @@ def through_devices(input_device=None, output_device=None, sample_rate: int = 48
         return measure(play_and_record, sample_rate, block_size, attempts,
                        reported_ms=reported_latency_ms(input_device, output_device,
                                                       setting=latency),
-                       engine_ms=engine_ms,
+                       engine_ms=engine_ms, warmup_seconds=warmup_seconds,
                        note=rate_mismatch(input_device, output_device, sample_rate))
     except Exception as exc:                    # noqa: BLE001 - as LiveBackend
         # PortAudio reports a missing device, a rate the pair cannot agree on

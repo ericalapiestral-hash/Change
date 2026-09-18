@@ -76,6 +76,10 @@ def _add_device_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--exclusive", action="store_true",
                         help="WASAPI exclusive mode: skips the Windows mixer, "
                              "and locks the device to this program")
+    parser.add_argument("--warmup", type=float, default=None, metavar="SEC",
+                        help="silence before the probe, so the stream is not "
+                             "brand new when it goes. 0 sends it in the "
+                             "stream's first callback; compare the two")
     parser.add_argument("--latency", choices=("low", "high"), default="low",
                         help="what to ask PortAudio for. 'high' is what a "
                              "program that does not ask gets, and it is meant "
@@ -253,6 +257,7 @@ def cmd_loopback(args) -> int:
             sample_rate=args.rate, block_size=args.block,
             attempts=args.attempts, exclusive=args.exclusive,
             latency=args.latency,
+            **({} if args.warmup is None else {"warmup_seconds": args.warmup}),
         )
     except AudioUnavailable as exc:
         print(str(exc), file=sys.stderr)

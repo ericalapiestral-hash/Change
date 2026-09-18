@@ -428,18 +428,41 @@ the number did not move: 109.4, 116.2, 110.4 ms. **2048 measured slower than
 7168.** A knob that does not order its own outputs is not the cause of
 anything; at 512 the path simply broke. So the cable's buffering was not it.
 
-What it was: `natvox` opened that stream without passing `latency`, so
-PortAudio was asked for `default_high_*_latency` on both ends — while the 5.0 ms
-subtracted came from `default_low_*_latency`. **The unexplained remainder was
-the difference between the stream that was opened and the stream that was
-described, and it was in this repository, not in the cable.**
+Second, `natvox` opened that stream without passing `latency`, so PortAudio was
+asked for `default_high_*_latency` on both ends — while the 5.0 ms subtracted
+came from `default_low_*_latency`. The program was describing a stream it had
+not opened. That is a real defect and it is fixed, but reading the PortAudio
+buffer arithmetic back suggests it is worth **something like 9–15 ms**, not 104:
+on WASAPI the `high` figure is the device's default period rather than something
+enormous, and the host buffer works out to `blocksize + max(blocksize,
+latency × rate)` per direction.
 
-The measurement itself was sound. `sd.playrec`'s callback fills `outdata` and
-reads `indata` under one frame counter, so the two arrays are aligned by
-construction and the delay recovered is the true loop delay — it was faithfully
-reporting a badly-opened stream. Which is the general lesson: a measurement can
-be correct and still be read wrong, and the first thing to suspect when a
-number blames somebody else's component is your own parameters.
+So where is the rest? The honest answer is **not yet known**, and these are the
+two candidates, neither of which has been measured on hardware:
+
+- **PortAudio's own duplex buffering across two different devices.** `device=(28, 25)`
+  is not one stream; the WASAPI host API opens two independent clients and
+  bridges them. Reading the source accounts for roughly 33–37 ms of the 109.
+- **Cold start.** The probe used to sit at frame 0 of the array handed to the
+  device, so it left in the stream's first callback — and `sd.playrec` opens and
+  closes a fresh stream for every attempt. A pipeline that has not settled would
+  give a large, repeatable offset, which is what the 2.8 ms spread looks like.
+
+That second one is now a knob rather than a theory. `--warmup` sets how much
+silence is played before the probe and subtracts it again, so `--warmup 0`
+reproduces the old behaviour and the default plays a quarter second first. **The
+difference between the two is how much of the number was the stream waking up.**
+
+What was already settled by reading the code: `sd.playrec`'s callback fills
+`outdata` and reads `indata` under one frame counter, so the two arrays are
+aligned by construction — the delay recovered is a real loop delay and not an
+artefact of when recording started. The measurement reports faithfully. What it
+reported was a stream opened with the wrong parameters, in a state nobody would
+run it in.
+
+The general lesson survives all of it: when a number blames somebody else's
+component, suspect your own parameters first. Here that was worth about 10 ms of
+the 104 — and it still beat blaming the cable, which was worth none of it.
 
 ### Should we write our own virtual cable?
 
@@ -522,7 +545,7 @@ reconstructs to −322 dB. It has **not** been run against a real checkpoint.
 
 ```bash
 pip install -e '.[dev]'
-pytest                      # 582 tests
+pytest                      # 589 tests
 python tools/bench.py       # artifact measurements
 
 cd web && npm install && npm test     # 127 more, including the live path

@@ -147,6 +147,58 @@ class TestWhatItRefuses:
         assert loopback.estimate_delay(np.zeros(1000), np.zeros(4), SR) is None
 
 
+class TestTheWarmUp:
+    """The probe used to sit at frame 0 of the array handed to the device, so
+    it left in the stream's very first callback.  Whether a driver has settled
+    by then is an empirical question, so the lead-in is a knob -- and the knob
+    only means anything if the answer does not depend on it."""
+
+    @pytest.mark.parametrize("warmup", [0.0, 0.05, 0.25, 1.0])
+    def test_the_answer_does_not_depend_on_it(self, warmup):
+        """The lead-in is subtracted again, so changing it is not a change of
+        units.  Without that, two warm-ups could not be compared at all."""
+        def play_and_record(signal):
+            return echo(signal, 1500, tail=0)
+
+        trip = loopback.measure(play_and_record, SR, attempts=1,
+                                warmup_seconds=warmup)
+        assert trip.measured_ms == pytest.approx(1500 / SR * 1000.0, abs=0.05)
+
+    def test_the_silence_really_is_played(self):
+        seen = {}
+
+        def play_and_record(signal):
+            seen["length"] = signal.size
+            return echo(signal, 100, tail=0)
+
+        loopback.measure(play_and_record, SR, attempts=1, warmup_seconds=0.25,
+                         tail_seconds=0.5)
+        assert seen["length"] == pytest.approx(
+            int(0.25 * SR) + loopback.probe(SR).size + int(0.5 * SR))
+
+    def test_an_echo_from_before_it_was_sent_is_dropped(self):
+        """Not an echo.  Keeping it would put a negative round trip into the
+        median; dropping it costs an attempt and the count says so."""
+        sent = loopback.probe(SR)
+
+        def play_and_record(signal):
+            # The probe appears 10 ms EARLIER than the warm-up says it left.
+            out = np.zeros(signal.size)
+            at = int(0.24 * SR)
+            out[at:at + sent.size] = sent
+            return out
+
+        trip = loopback.measure(play_and_record, SR, attempts=3,
+                                warmup_seconds=0.25)
+        assert trip.attempts == 0
+        assert "loops round" in trip.summary()
+
+    def test_a_negative_warmup_is_treated_as_none(self):
+        trip = loopback.measure(lambda s: echo(s, 480, tail=0), SR, attempts=1,
+                                warmup_seconds=-1.0)
+        assert trip.measured_ms == pytest.approx(10.0, abs=0.05)
+
+
 class TestMeasure:
     def test_it_takes_the_median_of_several_tries(self):
         delays = iter([1000, 1000, 9000, 1000, 1000])
@@ -234,7 +286,9 @@ class TestWhatItAsksFor:
             backend_module, "reported_latency_ms",
             lambda i, o, setting="low": claimed.setdefault("setting", setting) and 0.0)
 
-        trip = loopback.through_devices(1, 2, attempts=1)
+        # warmup 0: this is about the latency argument, and a lead-in would
+        # put the fake's echo before the probe it is meant to be an echo of.
+        trip = loopback.through_devices(1, 2, attempts=1, warmup_seconds=0.0)
         assert asked["latency"] == "low"
         assert claimed["setting"] == "low", \
             "the claim subtracted must describe the stream that was opened"
