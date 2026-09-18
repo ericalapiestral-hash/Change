@@ -316,6 +316,34 @@ class TestAnswers:
         assert window.studio.running, "asking must not stop it"
         window.stop()
 
+    def test_fitting_before_anything_was_said_explains_itself(self, window):
+        window.tune_to_voice()
+        assert "say a couple of sentences" in window.status.text()
+
+    def test_fitting_moves_the_sliders_to_what_was_measured(self, window):
+        """The audio fixture is a 130 Hz tone, so the shift it asks for is a
+        known number rather than whatever the preset guessed.
+
+        The pump has to run past voiceprint.MIN_VOICED_SECONDS: with less than
+        that the measurement declines to answer, which is correct and would
+        make this test pass for the wrong reason.
+        """
+        from natvox.app import voiceprint
+
+        window.start()
+        pump(voiceprint.MIN_VOICED_SECONDS + 1.0)
+        before = window.studio.current()["pitch_semitones"]
+        window.tune_to_voice()
+        after = window.studio.current()["pitch_semitones"]
+        assert after != before, "the preset's guess must not survive a measurement"
+        # 130 Hz to a female median is about +6.5 st; female_soft guessed +4.5.
+        assert after == pytest.approx(
+            voiceprint.measure(window.studio.recent_input(), 48000)
+                      .shift_to(voiceprint.FEMALE_TARGET_HZ), abs=0.15)
+        assert "130 Hz" in window.status.text()
+        assert window._readouts["pitch_semitones"].text() == f"{after:.1f}"
+        window.stop()
+
     def test_saving_before_anything_was_said_explains_itself(self, window):
         window.save_capture()
         assert "Nothing recorded" in window.status.text()

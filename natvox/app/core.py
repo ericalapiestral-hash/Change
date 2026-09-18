@@ -399,6 +399,36 @@ class Studio:
         target.write_bytes(write_wav(audio, self.settings.sample_rate))
         return target
 
+    # -- fitting the voice to the speaker ----------------------------------
+    def measure_voice(self, audio=None):
+        """What the speaker's own voice measures, from the loop recorder.
+
+        Uses whatever has been said recently rather than asking for a separate
+        take: by the time somebody wonders whether it sounds right, they have
+        already been talking into it.
+        """
+        from . import voiceprint
+
+        source = self.recent_input() if audio is None else audio
+        return voiceprint.measure(source, self.settings.sample_rate)
+
+    def tune(self, target_hz=None, audio=None, apply: bool = False):
+        """Fit the current voice to this speaker, and optionally use it.
+
+        ``apply`` is off by default because this is a measurement first: the
+        answer is often that the shift a speaker needs is past where the method
+        stays transparent, and that is worth reading before it is applied.
+        """
+        from . import voiceprint
+
+        target = (voiceprint.FEMALE_TARGET_HZ if target_hz is None
+                  else float(target_hz))
+        suggestion = voiceprint.suggest(self.measure_voice(audio), target,
+                                        api.get_voice(self.settings.voice).profile)
+        if apply and suggestion.voice.usable:
+            self.adjust(**api.profile_to_dict(suggestion.profile))
+        return suggestion
+
     def rate_note(self) -> str:
         """Anything about the chosen devices worth saying before talking.
 

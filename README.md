@@ -215,6 +215,54 @@ semitones PSOLA stops being transparent.
 `younger` stay well inside the transparent range and are the ones that hold up
 best under close listening.
 
+### Fit it to the speaker
+
+Every preset above is a statement about a voice nobody has heard. `female`
+raises pitch by 7 semitones because adult male and female F0 differ by about
+9.6 and three quarters of that is where PSOLA stays transparent — but seven
+semitones is not a destination, it is a distance:
+
+| speaker's habitual F0 | `female` lands them at | to reach 200 Hz they need |
+|---|---|---|
+| 95 Hz | 142 Hz | +12.9 st |
+| 110 Hz | 165 Hz | +10.3 st |
+| 125 Hz | 187 Hz | +8.1 st |
+| 145 Hz | 217 Hz | +5.6 st |
+
+The same preset undershoots three of those speakers and overshoots the fourth.
+The program already tracks pitch, so it does not have to guess:
+
+```bash
+natvox-cli.exe --tune          # records a few seconds and works it out
+```
+
+or **Fit it to my voice** in the window, which reads whatever you have already
+been saying rather than asking for a separate take.
+
+Two things it decides, both of which could have gone the other way:
+
+**Median, not mean.** Connected speech falls at the end of every phrase and
+many speakers drop into creak there, an octave or more down. On a test signal
+with a creak tail the mean reads 106.9 Hz and the median 120.0 — a 2.1 semitone
+difference in what gets asked for, which here is the difference between inside
+the transparent range and outside it.
+
+**The tract shift is a constant, not a fraction of the pitch shift.** Vocal
+folds and vocal tract do not scale together: adult tract lengths differ by
+about 1.17, which is 2.7 semitones, and that is as true of a woman with a low
+voice as a high one. So the formant shift is fixed and the pitch shift is
+whatever the speaker needs. The "about 40% of the pitch shift" rule of thumb
+gives the right answer for an average male speaker and the wrong one for
+everybody else, in the direction that makes a low voice sound like a child.
+
+It sets `f0_min` from the speaker's own floor too, which is the main latency
+control — so fitting the voice usually makes it faster as well.
+
+What it will not do is pretend. A 95 Hz speaker needs +12.9 semitones to reach
+a female median, and that is past where any time-domain method stays
+transparent; it says so, says where staying inside the limit would land them
+instead, and leaves the choice.
+
 ### More than pitch and formants
 
 `male_to_female` moves pitch and vocal-tract size and nothing else. That is the
@@ -548,7 +596,7 @@ reconstructs to −322 dB. It has **not** been run against a real checkpoint.
 
 ```bash
 pip install -e '.[dev]'
-pytest                      # 589 tests
+pytest                      # 617 tests
 python tools/bench.py       # artifact measurements
 
 cd web && npm install && npm test     # 127 more, including the live path
@@ -589,6 +637,10 @@ off" is a statement that can be checked rather than an impression.
 
 ## Limits
 
+- **A preset is a guess about your voice.** The shipped profiles assume an
+  average speaker and are wrong for everyone else by however far their own
+  pitch differs — see [Fit it to the speaker](#fit-it-to-the-speaker). Measure
+  before concluding anything about how well the presets work.
 - **This cannot make you sound like someone else.** Everything here reshapes
   the speaker who is talking: their pitch, their vocal tract, their range,
   their source spectrum, their phonation. It does not replace them. A voice

@@ -182,6 +182,45 @@ class TestTheBundledEntryPoint:
         assert "female_soft" in capsys.readouterr().out
 
 
+class TestTune:
+    def test_it_says_what_to_install_when_there_is_no_microphone(self, capsys):
+        assert main(["app", "--tune", "--seconds", "0.2"]) == 1
+        err = capsys.readouterr().err
+        assert "talk normally" in err
+        assert "could not record" in err or "install" in err.lower()
+
+    def test_it_prints_the_command_that_uses_what_it_found(self, capsys, monkeypatch):
+        import sys as _sys
+
+        from natvox.app import backend as backend_module
+
+        _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+        from bench import sustained
+
+        voice = np.concatenate([sustained(120.0, v, 0.5, 48000)
+                                for v in ("a", "i", "u", "e")])
+
+        class Fake:
+            @staticmethod
+            def rec(frames, **kwargs):
+                out = np.zeros((frames, 1), dtype="float32")
+                take = min(frames, voice.size)
+                out[:take, 0] = voice[:take]
+                return out
+
+            @staticmethod
+            def wait():
+                pass
+
+        monkeypatch.setattr(backend_module, "_sounddevice", lambda: Fake)
+        monkeypatch.setattr(backend_module, "rate_mismatch", lambda *a, **k: "")
+        assert main(["app", "--tune", "--seconds", "2"]) == 0
+        out = capsys.readouterr().out
+        assert "120 Hz" in out
+        assert "natvox live --pitch" in out
+        assert "--f0-min" in out, "the floor it found is worth carrying over"
+
+
 class TestLoopback:
     def test_it_says_what_went_wrong_rather_than_raising(self, capsys):
         """No sound card here, so this is the real failure path."""

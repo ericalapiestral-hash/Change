@@ -276,6 +276,53 @@ def cmd_loopback(args) -> int:
     return 0
 
 
+def cmd_tune(args) -> int:
+    """Record a few seconds and work out the shift this speaker needs.
+
+    The presets are statements about a speaker nobody has heard: +7 semitones
+    lands a 100 Hz voice at 150 and a 140 Hz voice at 210, and only one of
+    those is a woman's pitch.  This measures instead.
+    """
+    from .app import voiceprint
+    from .app.backend import AudioUnavailable, _sounddevice, rate_mismatch
+
+    seconds = args.seconds if args.seconds is not None else 8.0
+    target = args.target if args.target is not None else voiceprint.FEMALE_TARGET_HZ
+    try:
+        sd = _sounddevice()
+    except AudioUnavailable as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    device = _device_arg(args.input_device)
+    note = rate_mismatch(device, None, args.rate)
+    if note:
+        print(f"note: {note}", file=sys.stderr)
+
+    print(f"talk normally for {seconds:.0f} seconds -- a couple of sentences, "
+          "in your ordinary voice", file=sys.stderr)
+    try:
+        recorded = sd.rec(int(seconds * args.rate), samplerate=args.rate,
+                          channels=1, dtype="float32", device=device,
+                          latency=args.latency)
+        sd.wait()
+    except Exception as exc:                    # noqa: BLE001 - as elsewhere
+        print(f"could not record: {exc}", file=sys.stderr)
+        return 1
+
+    voice = voiceprint.measure(np.asarray(recorded).reshape(-1), args.rate)
+    suggestion = voiceprint.suggest(voice, target,
+                                    _profile_from_args(args))
+    print(suggestion.summary())
+    if not voice.usable:
+        return 1
+    print("\nto use it:")
+    print(f"  natvox live --pitch {suggestion.profile.pitch_semitones:.1f} "
+          f"--formant {suggestion.profile.formant_semitones:.1f} "
+          f"--f0-min {suggestion.profile.f0_min:.0f}"
+          + (f" -p {args.preset}" if args.preset else ""))
+    return 0
+
+
 def cmd_app(args) -> int:
     from .app.core import Studio
 
@@ -283,10 +330,13 @@ def cmd_app(args) -> int:
         return print_devices()
     if args.loopback:
         return cmd_loopback(args)
+    if args.tune:
+        return cmd_tune(args)
     if args.check:
         studio = Studio()
+        seconds = args.seconds if args.seconds is not None else 2.0
         for block in (64, 128, 256, 512):
-            print(studio.self_test(block, seconds=args.seconds).summary())
+            print(studio.self_test(block, seconds=seconds).summary())
         return 0
     if args.probe:
         from .app.remote import probe
@@ -358,8 +408,14 @@ def build_parser() -> argparse.ArgumentParser:
                           "back in through another; loop them together first")
     app.add_argument("--probe", metavar="WS_URL",
                      help="measure what converting on another machine would cost")
-    app.add_argument("--seconds", type=float, default=2.0,
-                     help="how long --check measures for")
+    app.add_argument("--tune", action="store_true",
+                     help="measure your own voice and work out the shift it "
+                          "needs; the presets are a guess about a speaker "
+                          "nobody has heard")
+    app.add_argument("--target", type=float, default=None, metavar="HZ",
+                     help="pitch to aim --tune at (default: a female median)")
+    app.add_argument("--seconds", type=float, default=None,
+                     help="how long --check measures for, or --tune records for")
     _add_device_options(app)
     app.add_argument("--attempts", type=int, default=5,
                      help="how many times --loopback sends the probe")

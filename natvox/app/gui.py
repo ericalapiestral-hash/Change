@@ -249,7 +249,12 @@ class Window(QtWidgets.QWidget):
         self.save.clicked.connect(self.save_capture)
         self.check = QtWidgets.QPushButton("Will this computer keep up?")
         self.check.clicked.connect(self.run_self_test)
-        for button in (self.power, self.ab, self.save, self.check):
+        self.tune = QtWidgets.QPushButton("Fit it to my voice")
+        self.tune.setToolTip(
+            "Measures the pitch you have actually been speaking at and works "
+            "out the shift it needs. The presets guess.")
+        self.tune.clicked.connect(self.tune_to_voice)
+        for button in (self.power, self.ab, self.save, self.check, self.tune):
             row.addWidget(button)
         return box
 
@@ -481,6 +486,22 @@ class Window(QtWidgets.QWidget):
         from .remote import probe
         block = int(self.block_size.currentText())
         self._worker.run(lambda: probe(url, block_size=block))
+
+    def tune_to_voice(self) -> None:
+        """Fit the shift to whoever has been talking.
+
+        Reads the loop recorder rather than asking for a separate take: by the
+        time somebody wonders whether it sounds right, they have been talking
+        into it already.  It applies the result, because the alternative is
+        printing numbers at somebody who wanted to hear the difference -- and
+        the A/B and the voice list are both one click away.
+        """
+        if self.studio.recent_input().size == 0:
+            self.report("Start it and say a couple of sentences first.")
+            return
+        suggestion = self.studio.tune(apply=True)
+        self._show_profile()
+        self.report(suggestion.summary())
 
     def save_capture(self) -> None:
         audio = self.studio.recent_input()
