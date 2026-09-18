@@ -5,6 +5,7 @@
     natvox process in.wav out.wav --pitch 5 --formant 2
     natvox devices                          # audio hardware
     natvox live -p male_to_female           # microphone -> output
+    natvox serve                            # HTTP + WebSocket API on :8420
 """
 from __future__ import annotations
 
@@ -149,6 +150,12 @@ def cmd_live(args) -> int:
     return 0
 
 
+def cmd_serve(args) -> int:
+    from .server import main as serve_main
+
+    return serve_main(args.host, args.port, args.verbose)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="natvox", description=__doc__,
@@ -180,6 +187,15 @@ def build_parser() -> argparse.ArgumentParser:
                       help="1.0 is fully converted, 0.0 is the delayed original")
     _add_voice_options(live)
     live.set_defaults(func=cmd_live)
+
+    serve = sub.add_parser("serve", help="run the HTTP + WebSocket API")
+    serve.add_argument("--host", default="127.0.0.1",
+                       help="interface to bind; the default is loopback only, "
+                            "because the API has no authentication")
+    serve.add_argument("--port", type=int, default=8420)
+    serve.add_argument("-v", "--verbose", action="store_true",
+                       help="log every request")
+    serve.set_defaults(func=cmd_serve)
     return parser
 
 
