@@ -450,8 +450,11 @@ two candidates, neither of which has been measured on hardware:
 
 That second one is now a knob rather than a theory. `--warmup` sets how much
 silence is played before the probe and subtracts it again, so `--warmup 0`
-reproduces the old behaviour and the default plays a quarter second first. **The
-difference between the two is how much of the number was the stream waking up.**
+reproduces the old behaviour and the default plays a quarter second first. It
+discriminates either way: **a difference between the two is how much of the
+number was the stream waking up, and no difference rules cold start out** and
+points at the first candidate instead, since PortAudio's cross-device bridge
+would freeze its offset at stream start and silence afterwards cannot thaw it.
 
 What was already settled by reading the code: `sd.playrec`'s callback fills
 `outdata` and reads `indata` under one frame counter, so the two arrays are
