@@ -26,7 +26,8 @@ def _profile_from_args(args) -> VoiceProfile:
         value = getattr(args, name, None)
         if value is not None:
             overrides[f"{name}_semitones"] = value
-    for name in ("f0_min", "f0_max", "breathiness", "output_gain_db"):
+    for name in ("f0_min", "f0_max", "breathiness", "intonation", "tilt_db",
+                 "output_gain_db"):
         value = getattr(args, name, None)
         if value is not None:
             overrides[name] = value
@@ -47,7 +48,11 @@ def _add_voice_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--f0-max", type=float, metavar="HZ",
                         help="highest pitch to track")
     parser.add_argument("--breathiness", type=float, metavar="0-1",
-                        help="aspiration noise to mix in")
+                        help="aspiration noise to mix into voiced audio")
+    parser.add_argument("--intonation", type=float, metavar="X",
+                        help="scale the speaker's pitch range (1.0 keeps it)")
+    parser.add_argument("--tilt-db", dest="tilt_db", type=float, metavar="DB",
+                        help="spectral tilt, low to high; + is brighter")
     parser.add_argument("--output-gain-db", type=float, metavar="DB",
                         help="gain after loudness matching")
     parser.add_argument("--shift-unvoiced", dest="shift_unvoiced",
@@ -72,6 +77,10 @@ def cmd_presets(args) -> int:
             extra.append("shifts consonants")
         if p.breathiness:
             extra.append(f"breath {p.breathiness:.2f}")
+        if p.intonation != 1.0:
+            extra.append(f"range x{p.intonation:.2f}")
+        if p.tilt_db:
+            extra.append(f"tilt {p.tilt_db:+.1f} dB")
         print(f"{name:<26}{p.pitch_semitones:>+6.1f}{p.formant_semitones:>+9.1f}"
               f"{f'{p.f0_min:.0f}-{p.f0_max:.0f} Hz':>13}  {', '.join(extra)}")
     return 0

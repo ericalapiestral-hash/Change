@@ -13,9 +13,14 @@ from .config import VoiceProfile
 
 PRESETS: dict[str, VoiceProfile] = {
     "off": VoiceProfile(),
+    # 0.02 rather than the 0.03 this carried before aspiration was keyed off
+    # the signal's energy in the aspiration band instead of its broadband
+    # level: the new keying is louder for the same setting, and this restores
+    # the level actually measured here (-45.9 dB of added energy on voiced
+    # audio against -44.8 dB before).
     "male_to_female": VoiceProfile(
         pitch_semitones=7.0, formant_semitones=2.6, f0_min=70.0, f0_max=400.0,
-        shift_unvoiced=True, breathiness=0.03,
+        shift_unvoiced=True, breathiness=0.02,
     ),
     "female_to_male": VoiceProfile(
         pitch_semitones=-7.0, formant_semitones=-2.6, f0_min=110.0, f0_max=500.0,
@@ -23,6 +28,44 @@ PRESETS: dict[str, VoiceProfile] = {
     ),
     "male_to_female_subtle": VoiceProfile(
         pitch_semitones=4.5, formant_semitones=1.8, f0_min=70.0, f0_max=400.0,
+    ),
+    # The presets above move pitch and vocal-tract size and nothing else,
+    # which is the transparent thing to do and also the reason they still
+    # sound like a man an octave up: pitch and tract length are two of the
+    # cues, and the ear uses more than two.  The three below add the rest of
+    # what the literature actually measures between male and female speech.
+    #
+    #   intonation  F0 standard deviation in read speech is ~2.0-2.8 st for
+    #               men against ~2.4-3.4 st for women, a ratio near 1.2.  A
+    #               uniform shift preserves the speaker's range exactly, so
+    #               without this the output keeps a man's intonation.
+    #   tilt_db     Long-term average spectra differ by a few dB of slope
+    #               beyond what tract scaling explains -- a higher glottal
+    #               open quotient means less energy low down and more air up
+    #               top.  Formant shifting moves the filter; this is the
+    #               source.
+    #   breathiness Female phonation is measurably breathier (lower HNR,
+    #               larger H1-H2).  Gated to voiced audio only, so it is
+    #               aspiration rather than hiss.  The three settings below put
+    #               a sustained vowel at 27.7, 24.2 and 21.7 dB HNR, which is
+    #               the range real modal-to-breathy female phonation measures
+    #               in; the same engine without it returns 47 dB, cleaner than
+    #               any human being.
+    #
+    # Every one of them is a cue rather than a transformation: none of them
+    # changes *whose* voice it is, and no amount of them will.  That needs a
+    # conversion model -- see natvox.neural.
+    "female": VoiceProfile(
+        pitch_semitones=7.0, formant_semitones=2.6, f0_min=70.0, f0_max=400.0,
+        shift_unvoiced=True, breathiness=0.12, intonation=1.22, tilt_db=2.0,
+    ),
+    "female_soft": VoiceProfile(
+        pitch_semitones=4.5, formant_semitones=1.8, f0_min=70.0, f0_max=400.0,
+        breathiness=0.08, intonation=1.15, tilt_db=1.2,
+    ),
+    "female_bright": VoiceProfile(
+        pitch_semitones=7.5, formant_semitones=3.2, f0_min=70.0, f0_max=420.0,
+        shift_unvoiced=True, breathiness=0.16, intonation=1.28, tilt_db=3.5,
     ),
     "female_to_male_subtle": VoiceProfile(
         pitch_semitones=-4.5, formant_semitones=-1.8, f0_min=110.0, f0_max=500.0,

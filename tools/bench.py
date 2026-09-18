@@ -15,8 +15,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import natvox                                  # noqa: E402
 from evaluate import (                         # noqa: E402
-    creak_voicing, formant_error_db, harmonic_split_db, hnr_db,
-    jitter_shimmer, onset_lag_ms, pitch_error_cents, unvoiced_error_db,
+    added_energy_db, creak_voicing, formant_error_db, harmonic_split_db,
+    hnr_db, jitter_shimmer, onset_lag_ms, pitch_error_cents, pitch_range_st,
+    spectral_tilt_db, unvoiced_error_db,
 )
 from synth_speech import (                     # noqa: E402
     VOWELS, creak_fall, glottal_source, human_vowel, onset_train, utterance,
@@ -40,6 +41,28 @@ def sustained(f0: float = 120.0, vowel: str = "a", seconds: float = 1.2,
     x[:fade] *= np.linspace(0, 1, fade)
     x[-fade:] *= np.linspace(1, 0, fade)
     return 0.5 * x
+
+
+def voice_cues(profile, dry_utt, voiced, unvoiced, wet_utt) -> dict:
+    """Measure the three controls that shape *what kind of* voice comes out.
+
+    Each is an A/B against the same engine with that one control neutralised,
+    because all three run alongside a pitch and formant shift that moves the
+    same numbers.  Nothing here is measurable from a single run.
+    """
+    cues = {}
+    if abs(profile.intonation - 1.0) > 1e-9:
+        flat = natvox.process_array(dry_utt, SR, profile.replace(intonation=1.0), 512)
+        base = pitch_range_st(flat, SR)
+        cues["range_x"] = pitch_range_st(wet_utt, SR) / base if base else float("nan")
+    if abs(profile.tilt_db) > 1e-9:
+        level = natvox.process_array(dry_utt, SR, profile.replace(tilt_db=0.0), 512)
+        cues["tilt_db"] = spectral_tilt_db(wet_utt, SR) - spectral_tilt_db(level, SR)
+    if profile.breathiness > 0.0:
+        dry_air = natvox.process_array(dry_utt, SR, profile.replace(breathiness=0.0), 512)
+        cues["asp_voiced"] = added_energy_db(dry_air, wet_utt, voiced)
+        cues["asp_unvoiced"] = added_energy_db(dry_air, wet_utt, unvoiced)
+    return cues
 
 
 def run(name: str, profile, dry_utt, truth, dry_sus, f0_sus, boundary) -> dict:
@@ -69,6 +92,7 @@ def run(name: str, profile, dry_utt, truth, dry_sus, f0_sus, boundary) -> dict:
 
     return {
         "preset": name,
+        **voice_cues(profile, dry_utt, voiced, unvoiced, wet_utt),
         "onset_ms": onset_mean,
         "creak_pct": 100.0 * creak_share,
         "creak_flips": creak_flips,
@@ -98,7 +122,8 @@ def main(argv: list[str]) -> int:
 
     wanted = argv or [
         "off", "brighter", "deeper", "younger", "male_to_female_subtle",
-        "male_to_female", "female_to_male", "anonymous",
+        "male_to_female", "female_soft", "female", "female_bright",
+        "female_to_male", "anonymous",
     ]
 
     header = (f"{'preset':<22}{'pitch':>6}{'form':>6}{'lat':>7}{'rtf':>6}"
@@ -118,6 +143,24 @@ def main(argv: list[str]) -> int:
               f"{row['onset_ms']:>6.1f}m"
               f"{row['creak_pct']:>7.1f}%/{row['creak_flips']:<3d}"
               f"{row['jitter_ratio']:>7.2f}x")
+    cued = [r for r in rows if {"range_x", "tilt_db", "asp_voiced"} & r.keys()]
+    if cued:
+        cue_header = (f"\n{'preset':<22}{'range':>8}{'tilt':>9}"
+                      f"{'asp voiced':>12}{'asp unvoiced':>14}")
+        print(cue_header)
+        print("-" * (len(cue_header) - 1))
+        for row in cued:
+            def cell(key, fmt, width):
+                return (format(row[key], fmt) if key in row else "-").rjust(width)
+            print(f"{row['preset']:<22}{cell('range_x', '.3f', 7)}x"
+                  f"{cell('tilt_db', '+.2f', 6)} dB"
+                  f"{cell('asp_voiced', '+.1f', 9)} dB"
+                  f"{cell('asp_unvoiced', '+.1f', 11)} dB")
+        print("range = pitch-range multiple against the same preset at "
+              "intonation 1.0; tilt = brightness\nchange against the same "
+              "preset at tilt 0 dB; asp = energy the aspiration mix adds, "
+              "which\nbelongs on voiced audio and nowhere else -- on a "
+              "fricative it is just hiss.")
     print(f"\nreference (unprocessed sustained vowel): "
           f"inharmonic {rows[0]['inharm_in']:.1f} dB, HNR {rows[0]['hnr_in']:.1f} dB")
     print("onset = ms from a true vowel onset to the first voiced pitch mark; "

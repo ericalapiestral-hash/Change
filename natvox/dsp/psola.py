@@ -33,12 +33,19 @@ class Mark:
     period-to-period irregularity, measured for free while phase-locking the
     mark, and carrying it through to synthesis is what stops the output being
     more perfectly periodic than the voice that went in.
+
+    ``ratio`` is the pitch ratio this mark is to be synthesised at.  It lives
+    on the mark rather than on the engine because intonation expansion makes
+    it vary from one glottal pulse to the next, and because it must be a
+    function of the mark alone: anything derived from how much audio happened
+    to have arrived would make the output depend on the caller's block size.
     """
 
     position: int
     period: float
     voiced: bool
     deviation: float = 0.0
+    ratio: float = 1.0
 
 
 def grain_half_length(period: float, pitch_ratio: float, formant_ratio: float,

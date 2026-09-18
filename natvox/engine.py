@@ -20,7 +20,7 @@ from __future__ import annotations
 import numpy as np
 from scipy import signal
 
-from .config import VoiceProfile
+from .config import INTONATION_LIMIT_ST, TILT_PIVOT_HZ, VoiceProfile
 from .dsp.epochs import EpochTracker
 from .dsp.f0 import YinF0Tracker
 from .dsp.prng import CounterNoise, Prng
@@ -31,6 +31,7 @@ from .dsp.util import (
     OverlapAccumulator,
     RingBuffer,
     RmsMatcher,
+    TiltFilter,
     soft_clip,
 )
 
@@ -90,6 +91,33 @@ TRANSIENT_CREST = 2.8
 #: Averaging window for the short-term term above (0.5 ms).
 TRANSIENT_WINDOW_SECONDS = 0.0005
 
+#: Time constant of the running pitch average that intonation expansion works
+#: against.
+#:
+#: This is the one number that decides what "intonation" means here.  Too
+#: short and the average tracks the contour it is supposed to be measured
+#: against, so nothing is left to expand; too long and it stops being
+#: intonation at all and becomes the speaker's habitual pitch, at which point
+#: expansion is just a slow, unbounded transpose.  Measured on the reference
+#: utterance, the range actually delivered for a setting of 1.22 runs 1.058x
+#: at 0.3 s, 1.149x at 1.5 s and 1.191x at 4 s -- the setting is a gain on the
+#: deviation, and the time constant decides how much of the contour counts as
+#: deviation in the first place.
+#:
+#: 1.5 s sits above phrase length and below register, which is the band where
+#: the gender difference in F0 range is actually measured.  It is also why the
+#: setting is documented as a gain rather than as a promised range ratio:
+#: turning it into one would mean dividing by a factor that depends on the
+#: speaker's own contour, which is not a constant and would be a lie in both
+#: directions.
+INTONATION_TC = 1.50
+
+#: Aspiration noise level at ``breathiness == 1.0``, relative to the local
+#: envelope of the signal *within the aspiration band*.  Larger than it looks:
+#: the band holds a small fraction of a vowel's energy, so a multiplier of the
+#: in-band envelope is a much smaller multiplier of the voice.
+ASPIRATION_DEPTH = 4.0
+
 
 
 
@@ -111,6 +139,14 @@ class VoiceChanger:
         p = self.profile
         self._pitch_ratio = p.pitch_ratio
         self._formant_ratio = p.formant_ratio
+        self._intonation = float(p.intonation)
+        # Intonation expansion makes the pitch ratio vary per glottal pulse,
+        # so everything sized from the ratio has to be sized from the end of
+        # its range that asks for the most.  Longer grains come from the
+        # *lower* end, so that is the one the buffers are budgeted against.
+        span = INTONATION_LIMIT_ST if abs(self._intonation - 1.0) > 1e-9 else 0.0
+        self._ratio_lo = self._pitch_ratio * 2.0 ** (-span / 12.0)
+        self._ratio_hi = self._pitch_ratio * 2.0 ** (span / 12.0)
 
         self._f0 = YinF0Tracker(sample_rate, p.f0_min, p.f0_max)
         self._epochs = EpochTracker()
@@ -129,7 +165,7 @@ class VoiceChanger:
         # longest grains a couple of samples short of their buffer.
         longest_period = float(self._f0.tau_max)
         self._max_half = max(
-            grain_half_length(longest_period, self._pitch_ratio, self._formant_ratio),
+            grain_half_length(longest_period, self._ratio_lo, self._formant_ratio),
             int(round(self._unvoiced_hop * (1.0 + UNVOICED_JITTER))),
         )
         # Grains are laid down centred on their target, and lowering formants
@@ -171,6 +207,7 @@ class VoiceChanger:
         # configuration, so the kernel never has to be rebuilt mid-stream.
         self._resampler = GrainResampler(self._formant_ratio)
         self._unity_resampler = GrainResampler(1.0)
+        self._tilt = TiltFilter(sample_rate, p.tilt_db, TILT_PIVOT_HZ)
         nyquist = sample_rate * 0.5
         # A high-pass followed by a low-pass rather than a true Butterworth
         # band-pass. The shape barely differs for a noise bed, and the browser
@@ -199,9 +236,14 @@ class VoiceChanger:
         self._f0_pos = self._f0.half
         self._last_mark = 0
         self._last_voiced = False
+        # Running mean of log period, in natural log of samples.  ``None``
+        # until the first voiced mark, so the expansion starts from the
+        # speaker's actual pitch rather than sliding down from a guess.
+        self._log_period_mean: float | None = None
         self._synth_pos: float | None = None
         self._out_pos = 0
         self._breath_zi = np.zeros((self._breath_sos.shape[0], 2))
+        self._breath_key_zi = np.zeros((self._breath_sos.shape[0], 2))
         self._breath_env_zi = np.zeros(1)
         # Separate streams: sharing one generator would interleave the two
         # draw sequences differently depending on how many marks a given block
@@ -238,6 +280,7 @@ class VoiceChanger:
         self._epochs.reset()
         self._highpass = BiquadHighpass(self.sample_rate, self.profile.highpass_hz)
         self._loudness = RmsMatcher(self.sample_rate)
+        self._tilt = TiltFilter(self.sample_rate, self.profile.tilt_db, TILT_PIVOT_HZ)
         self._in = RingBuffer(self._in._buf.size)
         self._dry = RingBuffer(self._dry._buf.size)
         self._acc = OverlapAccumulator(self._acc._sig.size)
@@ -279,9 +322,13 @@ class VoiceChanger:
             wet = dry
         else:
             wet = self._acc.read(self._out_pos, self._out_pos + n)
+            # Tilt before the loudness match, so the match cancels whatever
+            # broadband level the slope implies and leaves only its colour.
+            wet = self._tilt(wet)
             wet = self._loudness(dry, wet)
             if self.profile.breathiness > 0.0:
-                wet = self._add_breath(wet)
+                voiced = self._acc.voiced_share(self._out_pos, self._out_pos + n)
+                wet = self._add_aspiration(wet, voiced)
         self._out_pos += n
         self._prune()
         return soft_clip(wet * self._gain)
@@ -342,7 +389,12 @@ class VoiceChanger:
 
             if frame.voiced:
                 period = float(np.clip(frame.period, f0.tau_min, f0.tau_max))
-                half = grain_half_length(period, self._pitch_ratio, self._formant_ratio)
+                # Computed, not committed: this loop may still decline to
+                # create the mark below, and the running average must advance
+                # once per mark that exists rather than once per attempt.
+                # Attempts depend on how often the caller calls us.
+                ratio, pending_mean = self._ratio_for(period)
+                half = grain_half_length(period, ratio, self._formant_ratio)
                 # Phase-locking may place the mark up to search_fraction of a
                 # period *later* than predicted, and the grain then needs a
                 # half-length beyond that.  Budgeting only to the predicted
@@ -362,6 +414,7 @@ class VoiceChanger:
                 mark = max(mark, self._last_mark + 1)
                 deviation = float(mark - predicted)
             else:
+                ratio, pending_mean = self._pitch_ratio, self._log_period_mean
                 period = float(self._unvoiced_hop)
                 # Test the worst-case gap before drawing, so a draw is never
                 # consumed by a mark we then decline to create.
@@ -372,10 +425,44 @@ class VoiceChanger:
                 mark = self._last_mark + max(8, int(round(self._unvoiced_hop * spread)))
                 deviation = 0.0
 
-            self._marks.append(Mark(mark, period, frame.voiced, deviation))
+            self._marks.append(Mark(mark, period, frame.voiced, deviation, ratio))
+            self._log_period_mean = pending_mean
             self._last_mark = mark
             self._last_voiced = frame.voiced
             horizon = mark + self._onset_lookahead
+
+    def _ratio_for(self, period: float):
+        """``(ratio, mean_after)`` for a mark of this period, after expansion.
+
+        The speaker is up or down relative to their own running average by
+        ``12 * log2(mean_period / period)`` semitones; expansion multiplies
+        that deviation and folds the surplus into the ratio.  Deliberately
+        measured against the average *before* this mark updates it, so a mark
+        is never partly compared against itself.
+
+        Pure, and the advanced average is handed back rather than stored,
+        because the caller may still decline to create this mark -- and how
+        many times it tries before succeeding is a function of the audio block
+        size, which nothing in the output is allowed to depend on.  Storing it
+        here instead cost a measured 0.1 of full scale between a 64-sample
+        block and a 1024-sample one.
+        """
+        if self._intonation == 1.0:
+            return self._pitch_ratio, self._log_period_mean
+        log_period = float(np.log(period))
+        mean = self._log_period_mean
+        if mean is None:
+            mean = log_period
+        # One-pole in the mark domain: a mark covers one period of time, so
+        # the coefficient is derived from that period rather than a fixed hop.
+        alpha = float(np.exp(-period / (INTONATION_TC * self.sample_rate)))
+        advanced = alpha * mean + (1.0 - alpha) * log_period
+        deviation_st = 12.0 * (mean - log_period) / np.log(2.0)
+        extra = float(np.clip((self._intonation - 1.0) * deviation_st,
+                              -INTONATION_LIMIT_ST, INTONATION_LIMIT_ST))
+        ratio = float(np.clip(self._pitch_ratio * 2.0 ** (extra / 12.0),
+                              self._ratio_lo, self._ratio_hi))
+        return ratio, advanced
 
     def _earliest_voiced_within(self, start: int, stop: int):
         """First voiced pitch frame just after ``start``, if there is one.
@@ -411,7 +498,6 @@ class VoiceChanger:
         limit = float(marks[-1].position)
         shift_unvoiced = self.profile.shift_unvoiced
         alpha = self._formant_ratio
-        ratio = self._pitch_ratio
         view = self._in.view
 
         while self._synth_pos <= limit:
@@ -426,6 +512,7 @@ class VoiceChanger:
             # is applied to this grain only -- it must not accumulate into the
             # synthesis cursor, or the pitch itself would wander.
             target = self._synth_pos
+            ratio = mark.ratio if mark.voiced else self._pitch_ratio
             if mark.voiced and MICRO_TIMING:
                 # Divided by the pitch ratio only when shifting up.  Shifting
                 # up repeats grains, so consecutive synthesis marks often
@@ -433,7 +520,7 @@ class VoiceChanger:
                 # shifting down skips grains, which decorrelates successive
                 # deviations and would otherwise amplify it past the
                 # speaker's own.
-                target += MICRO_TIMING * mark.deviation / max(self._pitch_ratio, 1.0)
+                target += MICRO_TIMING * mark.deviation / max(ratio, 1.0)
 
             # Split the target position into a whole-sample slot and the
             # remainder, which is carried inside the grain as a phase ramp.
@@ -467,7 +554,8 @@ class VoiceChanger:
                 coherent = abs(formant - 1.0) < 1e-4
                 step = 0.0  # set below, from the true gap to the next mark
 
-            self._acc.add(base - window.size // 2, grain, window, coherent)
+            self._acc.add(base - window.size // 2, grain, window, coherent,
+                          mark.voiced)
 
             if mark.voiced:
                 self._synth_pos += step
@@ -500,24 +588,47 @@ class VoiceChanger:
         sums = cumulative[window:] - cumulative[:-window]
         return bool(np.sqrt(float(np.max(sums)) / window / mean) > TRANSIENT_CREST)
 
-    def _add_breath(self, wet: np.ndarray) -> np.ndarray:
-        """Mix in a little aspiration noise.
+    def _add_aspiration(self, wet: np.ndarray, voiced: np.ndarray) -> np.ndarray:
+        """Mix a little aspiration noise into the voiced audio.
 
         A large upward pitch shift spreads the harmonics apart and thins the
         spectrum out; real voices fill that region with breath.  The noise is
         band-limited to where aspiration actually lives (roughly 1.5-7 kHz)
         rather than being broadband, so it reads as breath instead of as hiss,
         and it is gated by the signal's own envelope so silence stays silent.
+
+        It is also gated by how voiced each sample is, which is the difference
+        between aspiration and hiss.  Aspiration is noise leaking through a
+        glottis that is not closing completely -- it happens *during phonation*
+        and nowhere else.  Adding it to a fricative instead lands noise on top
+        of noise, which does not sound breathy, only noisier: measured at
+        +2.8 dB of added noise across /s/ and /f/ for nothing.  The per-sample
+        voicing weight comes from the overlap-add windows themselves, so the
+        gate follows the same grains the audio did.
+
+        The envelope that sets its level is taken from the signal *in the same
+        band as the noise*, not from the signal as a whole.  In a real voice
+        the aspiration is generated at the glottis and then filtered by the
+        same vocal tract as the voiced source, so it is loud on a bright vowel
+        and quiet on a dark one.  Keying it off broadband level instead puts a
+        constant hiss over every vowel, including the ones with nothing up
+        there -- which measured as 7.2 dB of spectral envelope error against
+        1.2 dB without the noise, i.e. the "breath" was reshaping the vowel.
+        Keying it off the band's own energy is a first-order stand-in for that
+        filtering, costs one more biquad pair, and needs no envelope
+        estimation anywhere.
         """
         amount = self.profile.breathiness
         # Drawn one per output sample, so the sequence consumed is the same
         # however the caller chunks its audio.
         noise = self._noise_rng.normals(wet.size)
         shaped, self._breath_zi = signal.sosfilt(self._breath_sos, noise, zi=self._breath_zi)
+        key, self._breath_key_zi = signal.sosfilt(self._breath_sos, wet,
+                                                  zi=self._breath_key_zi)
         envelope, self._breath_env_zi = signal.lfilter(
-            self._env_b, self._env_a, np.abs(wet), zi=self._breath_env_zi
+            self._env_b, self._env_a, np.abs(key), zi=self._breath_env_zi
         )
-        return wet + shaped * envelope * (amount * 0.5)
+        return wet + shaped * envelope * voiced * (amount * ASPIRATION_DEPTH)
 
     def _prune(self) -> None:
         """Release buffers and list entries that nothing can reach back to.

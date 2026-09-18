@@ -403,3 +403,121 @@ def burst_fidelity(dry: np.ndarray, wet: np.ndarray, region, max_lag: int = 400)
     peak_out = float(np.max(np.abs(b[best:best + a.size])))
     level_db = 20.0 * np.log10(max(peak_out, 1e-12) / max(peak_in, 1e-12))
     return float(normalised[best]), level_db
+
+
+# --------------------------------------------------------------------------
+# Voice-quality cues.
+#
+# The metrics above ask "did the engine damage the signal?".  These ask "did
+# the engine do the thing it was asked to do?", for the three controls that
+# exist to make a converted voice read as a different *kind* of voice rather
+# than the same one transposed.  Each is measured against the same engine with
+# that one control switched off, because every one of them is entangled with
+# the pitch and formant shift happening alongside it, and only an A/B against
+# an otherwise identical run separates them.
+# --------------------------------------------------------------------------
+
+
+def pitch_range_st(x: np.ndarray, sr: int, f0_min: float = 60.0,
+                   f0_max: float = 600.0) -> float:
+    """Standard deviation of the pitch contour, in semitones.
+
+    Semitones rather than hertz on purpose: a uniform pitch shift multiplies
+    every F0 by the same factor, which scales the hertz spread but leaves the
+    semitone spread untouched.  That invariance is the whole point -- it is
+    what makes this measure the speaker's *intonation* rather than their
+    pitch, so a number that moves means the range really was changed.
+    """
+    _, values = pitch_track(x, sr, f0_min=f0_min, f0_max=f0_max)
+    voiced = values[values > 0.0]
+    if voiced.size < 8:
+        return float("nan")
+    semitones = 12.0 * np.log2(voiced)
+    # Octave errors in the reference tracker would otherwise dominate a
+    # standard deviation; they are rare, so rejecting them costs nothing.
+    keep = np.abs(semitones - np.median(semitones)) < 9.0
+    return float(np.std(semitones[keep])) if keep.sum() >= 8 else float("nan")
+
+
+def band_level_db(x: np.ndarray, sr: int, low: float, high: float,
+                  mask: np.ndarray | None = None) -> float:
+    """Mean energy between ``low`` and ``high`` Hz, in dB."""
+    segment = x[mask] if mask is not None else x
+    if segment.size < 1024:
+        return float("nan")
+    n = 1 << 12
+    hop = n // 2
+    window = np.hanning(n)
+    total = 0.0
+    frames = 0
+    freqs = np.fft.rfftfreq(n, 1.0 / sr)
+    band = (freqs >= low) & (freqs < high)
+    for start in range(0, segment.size - n, hop):
+        spectrum = np.abs(np.fft.rfft(segment[start:start + n] * window)) ** 2
+        total += float(np.mean(spectrum[band]))
+        frames += 1
+    if not frames:
+        return float("nan")
+    return 10.0 * np.log10(max(total / frames, EPS))
+
+
+def spectral_tilt_db(x: np.ndarray, sr: int, mask: np.ndarray | None = None,
+                     low=(100.0, 500.0), high=(2000.0, 6000.0)) -> float:
+    """High-band minus low-band level: how bright the signal is, in dB.
+
+    Averaged over frames as a *per-frame difference*, not as the difference of
+    two whole-signal averages.  The distinction is not academic: the engine
+    ends with a loudness matcher, whose gain moves from frame to frame and
+    correlates with which band dominates that frame.  Pooling each band across
+    the whole signal first lets that gain through and halved the measured tilt
+    -- 0.81 dB read back from a filter that delivers 1.66 dB on a flat
+    spectrum.  A per-frame difference cancels any broadband gain exactly,
+    whatever it does.
+
+    An absolute number here still means little, being dominated by the vowel;
+    the difference between two runs of the same audio is what is meaningful,
+    which is how :mod:`tools.bench` uses it.
+    """
+    segment = x[mask] if mask is not None else x
+    n = 1 << 12
+    hop = n // 2
+    if segment.size < n + hop:
+        return float("nan")
+    window = np.hanning(n)
+    freqs = np.fft.rfftfreq(n, 1.0 / sr)
+    lo_bins = (freqs >= low[0]) & (freqs < low[1])
+    hi_bins = (freqs >= high[0]) & (freqs < high[1])
+    lows, highs = [], []
+    for start in range(0, segment.size - n, hop):
+        spectrum = np.abs(np.fft.rfft(segment[start:start + n] * window)) ** 2
+        lows.append(float(np.mean(spectrum[lo_bins])))
+        highs.append(float(np.mean(spectrum[hi_bins])))
+    lows, highs = np.asarray(lows), np.asarray(highs)
+    # Skip near-silent frames: their band levels are noise, and the difference
+    # of two noise floors is noise.
+    live = (lows + highs) > 1e-6 * np.max(lows + highs)
+    if live.sum() < 4:
+        return float("nan")
+    return float(np.mean(10.0 * np.log10(np.maximum(highs[live], EPS)
+                                         / np.maximum(lows[live], EPS))))
+
+
+def added_energy_db(base: np.ndarray, test: np.ndarray,
+                    mask: np.ndarray | None = None) -> float:
+    """Energy in ``test - base`` relative to ``base``, in dB.
+
+    Both must be the same engine over the same audio with one setting
+    changed, so that the difference is the setting and not a phase shift:
+    anything that moved a sample would show up here as enormous.
+    """
+    n = min(base.size, test.size)
+    a, b = base[:n], test[:n]
+    if mask is not None:
+        m = mask[:n]
+        a, b = a[m], b[m]
+    if a.size < 64:
+        return float("nan")
+    reference = float(np.mean(a * a))
+    if reference <= EPS:
+        return float("nan")
+    return 10.0 * np.log10(max(float(np.mean((b - a) ** 2)), EPS) / reference)

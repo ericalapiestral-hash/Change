@@ -135,12 +135,14 @@ class OverlapAccumulator:
         self._sig_i = np.zeros(size)        # incoherent (resampled) grains
         self._win_i = np.zeros(size)
         self._pow_i = np.zeros(size)
+        self._win_v = np.zeros(size)        # window from voiced grains only
         self.origin = 0                     # absolute index of slot 0
         self._filled = 0                    # one past the highest slot written
 
     @property
     def _buffers(self):
-        return (self._sig, self._win, self._sig_i, self._win_i, self._pow_i)
+        return (self._sig, self._win, self._sig_i, self._win_i, self._pow_i,
+                self._win_v)
 
     def _ensure(self, upto: int) -> None:
         need = upto - self.origin
@@ -154,11 +156,22 @@ class OverlapAccumulator:
             new = np.zeros(size)
             new[:self._filled] = buf[:self._filled]
             grown.append(new)
-        (self._sig, self._win, self._sig_i, self._win_i, self._pow_i) = grown
+        (self._sig, self._win, self._sig_i, self._win_i, self._pow_i,
+         self._win_v) = grown
 
     def add(self, start: int, grain: np.ndarray, window: np.ndarray,
-            coherent: bool = True) -> None:
-        """Add ``grain`` (already windowed) plus its ``window`` at ``start``."""
+            coherent: bool = True, voiced: bool = False) -> None:
+        """Add ``grain`` (already windowed) plus its ``window`` at ``start``.
+
+        ``voiced`` additionally books the window into a separate total, which
+        is what :meth:`voiced_share` reads back.  Anything that wants to treat
+        vowels differently from consonants downstream needs a per-sample answer
+        to "how voiced is this?", and overlap-add already computes exactly that
+        as a by-product -- the grains know, and their windows are the natural
+        weighting.  Deriving it here rather than re-detecting it later also
+        keeps it independent of the caller's block size, which a second
+        detector running on the output would not be.
+        """
         if start < self.origin:  # too late, those samples are already gone
             skip = self.origin - start
             if skip >= grain.size:
@@ -173,6 +186,8 @@ class OverlapAccumulator:
             self._sig_i[i:i + grain.size] += grain
             self._win_i[i:i + window.size] += window
             self._pow_i[i:i + window.size] += window * window
+        if voiced:
+            self._win_v[i:i + window.size] += window
         self._filled = max(self._filled, i + grain.size)
 
     def read(self, start: int, stop: int, norm_floor: float = 0.30) -> np.ndarray:
@@ -200,6 +215,19 @@ class OverlapAccumulator:
         coherent = sig[live] / np.maximum(win[live], EPS) * win[live]
         incoherent = sig_i[live] / np.sqrt(np.maximum(pow_i[live], EPS)) * win_i[live]
         out[live] = (coherent + incoherent) / denom
+        return out
+
+    def voiced_share(self, start: int, stop: int) -> np.ndarray:
+        """Per-sample 0..1 weight of voiced grain coverage over ``[start, stop)``."""
+        n = max(stop - start, 0)
+        if n == 0:
+            return np.zeros(0)
+        self._ensure(stop)
+        i0, i1 = start - self.origin, stop - self.origin
+        total = self._win[i0:i1] + self._win_i[i0:i1]
+        out = np.zeros(n)
+        live = total > EPS
+        out[live] = np.clip(self._win_v[i0:i1][live] / total[live], 0.0, 1.0)
         return out
 
     def discard_to(self, abs_index: int) -> None:
@@ -239,6 +267,55 @@ class BiquadHighpass:
         if not self.enabled:
             return x
         y, self.zi = signal.sosfilt(self.sos, x, zi=self.zi)
+        return y
+
+
+class TiltFilter:
+    """First-order spectral tilt: ``gain_db`` from the bottom of the band to the top.
+
+    The asymptotes are ``-gain_db/2`` low down and ``+gain_db/2`` up top, and
+    they cross at ``pivot_hz``; as with any first-order shelf the response at
+    the crossing sits a little above it (the RMS of the two asymptotes rather
+    than their geometric mean -- +0.96 dB for a 6 dB tilt).  Nothing downstream
+    cares, because the whole point is a slope and the loudness matcher removes
+    whatever broadband level the slope implies.
+
+    It is a first-order shelf and nothing more, on purpose.  A steeper filter
+    would let the tilt be dialled in without touching the neighbouring bands,
+    which sounds like the right thing to want and is not: the ear reads a
+    narrow spectral edit as an effect, while a broad, gentle slope is heard as
+    the speaker simply having a different voice.  First order also means the
+    browser build reproduces it with three multiplies and no design step, so
+    the two implementations can be diffed sample for sample.
+
+    The coefficients come from the bilinear transform of
+    ``H(s) = (gh*s + gl*w0) / (s + w0)``, prewarped so the pivot lands exactly
+    on ``pivot_hz``.  The filter runs in transposed direct form II, which is
+    what :func:`scipy.signal.lfilter` does, so the port can use a scalar loop
+    and still agree bit for bit.
+    """
+
+    def __init__(self, sample_rate: int, gain_db: float,
+                 pivot_hz: float = 1000.0) -> None:
+        self.enabled = abs(gain_db) > 1e-6
+        if not self.enabled:
+            self.b = self.a = None
+            self.zi = None
+            return
+        nyquist = sample_rate * 0.5
+        pivot = min(max(pivot_hz, 20.0), nyquist * 0.9)
+        high = 10.0 ** (gain_db / 40.0)
+        low = 1.0 / high
+        k = float(np.tan(np.pi * pivot / sample_rate))
+        norm = 1.0 + k
+        self.b = [(high + low * k) / norm, (low * k - high) / norm]
+        self.a = [1.0, (k - 1.0) / norm]
+        self.zi = np.zeros(1)
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        if not self.enabled or x.size == 0:
+            return x
+        y, self.zi = signal.lfilter(self.b, self.a, x, zi=self.zi)
         return y
 
 
