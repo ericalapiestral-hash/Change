@@ -34,6 +34,14 @@ PROBE_SECONDS = 0.040
 PROBE_LOW_HZ = 300.0
 PROBE_HIGH_HZ = 6000.0
 
+#: Peak level of the probe, -12 dB rather than full scale.
+#:
+#: Somebody running this is wearing headphones -- the README tells them to, so
+#: that the output does not feed back into the microphone -- and a full-scale
+#: sweep straight into them is unkind at best.  The matched filter finds an
+#: echo 34 dB below this without complaining, so the level buys nothing.
+PROBE_LEVEL = 0.25
+
 #: How well the echo has to match the probe to be believed, as a normalised
 #: correlation.
 #:
@@ -68,7 +76,8 @@ QUIET_FLOOR_DB = -30.0
 
 
 def probe(sample_rate: int, seconds: float = PROBE_SECONDS,
-          low: float = PROBE_LOW_HZ, high: float = PROBE_HIGH_HZ) -> np.ndarray:
+          low: float = PROBE_LOW_HZ, high: float = PROBE_HIGH_HZ,
+          level: float = PROBE_LEVEL) -> np.ndarray:
     """A logarithmic sweep, faded at both ends so it starts and stops cleanly."""
     n = max(16, int(round(seconds * sample_rate)))
     # Re-derived from the clamped length rather than taken as asked for: the
@@ -85,7 +94,7 @@ def probe(sample_rate: int, seconds: float = PROBE_SECONDS,
     window = np.ones(n)
     window[:fade] = np.linspace(0.0, 1.0, fade)
     window[-fade:] = np.linspace(1.0, 0.0, fade)
-    return sweep * window
+    return sweep * window * level
 
 
 def estimate_delay(recording: np.ndarray, sent: np.ndarray,

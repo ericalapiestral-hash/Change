@@ -368,7 +368,9 @@ the stack will tell you.
 
 `--exclusive` adds WASAPI exclusive mode, which hands the device to this
 program alone and skips the mixer; run the measurement with and without it and
-keep whichever is faster. The estimator is a matched filter on a 40 ms sweep,
+keep whichever is faster. The estimator is a matched filter on a 40 ms sweep
+played 12 dB below full scale — it finds an echo 34 dB below *that*, so there
+is no reason to play it loudly into the headphones you are wearing. It is
 accurate to a fraction of a sample, and it returns "nothing came back" rather
 than a number when nothing did — silence, white noise, a tone and speech-shaped
 noise are all refused, because a confident wrong number is worse than none.
@@ -457,7 +459,7 @@ reconstructs to −322 dB. It has **not** been run against a real checkpoint.
 
 ```bash
 pip install -e '.[dev]'
-pytest                      # 552 tests
+pytest                      # 553 tests
 python tools/bench.py       # artifact measurements
 
 cd web && npm install && npm test     # 127 more, including the live path

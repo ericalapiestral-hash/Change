@@ -39,11 +39,18 @@ class TestTheProbe:
         assert high < loopback.PROBE_HIGH_HZ * 1.2
 
     def test_it_starts_and_stops_at_zero(self):
-        """A probe that steps to full scale is a click with a sweep attached,
-        and the click is what the room hears."""
+        """A probe that steps to level is a click with a sweep attached, and
+        the click is what the room hears."""
         sent = loopback.probe(SR)
         assert abs(sent[0]) < 1e-9 and abs(sent[-1]) < 1e-9
-        assert np.max(np.abs(sent)) > 0.9
+
+    def test_it_is_not_played_at_full_scale(self):
+        """Whoever runs this is wearing headphones, because the README told
+        them to.  The matched filter finds an echo 34 dB below this level, so
+        full scale would buy nothing and cost an ear."""
+        sent = loopback.probe(SR)
+        assert np.max(np.abs(sent)) == pytest.approx(loopback.PROBE_LEVEL, rel=0.02)
+        assert loopback.PROBE_LEVEL <= 0.3
 
     def test_a_silly_short_request_still_produces_a_signal(self):
         assert loopback.probe(SR, seconds=1e-6).size >= 16
