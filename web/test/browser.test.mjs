@@ -9,7 +9,7 @@
  */
 import { test, before, after, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { openApp, vowel, fricative, measurePitch, spectralCentroid, rms, residualDb } from './helpers.mjs';
+import { openApp, vowel, fricative, measurePitch, spectralCentroid, rms, residualDb, outOfBandDb } from './helpers.mjs';
 
 let app;
 before(async () => { app = await openApp(); });
@@ -261,5 +261,43 @@ describe('window.natvox', () => {
     });
     assert.equal(result.length, 24000);
     assert.ok(result.finite);
+  });
+});
+
+describe('being shouted into, through the worklet', () => {
+  const EDGE = 6500;      // the test vowel's 45 harmonics reach 5.4 kHz
+
+  test('driving it to four times full scale manufactures nothing', async () => {
+    const input = vowel(120, 1.0);
+    const scaled = (k) => Float32Array.from(input, (v) => v * k);
+    const quiet = await render(scaled(0.5), { pitchSemitones: 5, f0Min: 70 });
+    const loud = await render(scaled(4.0), { pitchSemitones: 5, f0Min: 70 });
+    // The share that arrives *with the level*, as an absolute figure. The
+    // difference of the two dB readings is not the measure: a clean baseline
+    // makes a tiny absolute addition look like tens of dB of change.
+    const share = (x) => Math.pow(10, outOfBandDb(x, 48000, EDGE) / 10);
+    const made = 10 * Math.log10(Math.max(share(loud.output) - share(quiet.output), 1e-12));
+    assert.ok(made < -60, `driving it hard manufactured ${made.toFixed(1)} dB above its band`);
+  });
+
+  test('the ceiling holds however hard it is driven', async () => {
+    for (const level of [1, 3, 20]) {
+      const input = Float32Array.from(vowel(120, 0.5), (v) => v * level);
+      const { output } = await render(input, { pitchSemitones: 5, f0Min: 70 });
+      let peak = 0;
+      for (const v of output) peak = Math.max(peak, Math.abs(v));
+      assert.ok(Number.isFinite(peak) && peak <= 0.995 + 1e-6,
+        `at ${level}x full scale the peak was ${peak}`);
+    }
+  });
+
+  test('a quiet signal comes out at the level it went in', async () => {
+    // The limiter must not be a compressor: nothing under the ceiling moves.
+    // The rumble filter is switched off, or its 0.2 dB at 120 Hz would be
+    // measured as the limiter doing something.
+    const input = vowel(120, 0.5);
+    const { output } = await render(input, { highpassHz: 0 });
+    const change = 20 * Math.log10(rms(output) / rms(input));
+    assert.ok(Math.abs(change) < 0.05, `level changed by ${change.toFixed(3)} dB`);
   });
 });

@@ -16,7 +16,7 @@ from __future__ import annotations
 import numpy as np
 from scipy import signal
 
-from .util import EPS, RingBuffer
+from .util import EPS, RingBuffer, round_half_up
 
 
 class EpochTracker:
@@ -36,8 +36,8 @@ class EpochTracker:
 
     def locate(self, buf: RingBuffer, predicted: int, reference: int, period: float) -> int:
         """Place a mark near ``predicted``, phase-locked to the one at ``reference``."""
-        half = max(4, int(round(period * 0.5)))
-        shift = max(1, int(round(period * self.search_fraction)))
+        half = max(4, round_half_up((period * 0.5)))
+        shift = max(1, round_half_up((period * self.search_fraction)))
 
         ref = buf.view(reference - half, reference + half)
         ref_energy = float(np.dot(ref, ref))
@@ -67,7 +67,7 @@ class EpochTracker:
         mark on -- but starting at the energy peak means the very first grain
         already carries a full pulse.
         """
-        span = max(8, int(round(period)))
+        span = max(8, round_half_up((period)))
         x = buf.view(start, start + span)
         if x.size == 0:
             return start

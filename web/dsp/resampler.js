@@ -102,9 +102,14 @@ export class GrainResampler {
     const step = inLen / outLen;
     for (let k = 0; k < outLen; k++) {
       const pos = (k - frac) * step;
-      const base = Math.floor(pos);
+      let base = Math.floor(pos);
       let phase = Math.round((pos - base) * phases);
-      if (phase >= phases) phase = phases - 1;
+      // A fraction that rounds up to a whole sample is the *next* sample at
+      // phase zero, not this one at the last phase. Clamping it instead
+      // reconstructs the point 1/512 of a sample away from where it was asked
+      // for, and for a small positive delay every sample in the grain lands
+      // there at once - 9.3e-3 of error for a delay of one part in a million.
+      if (phase >= phases) { phase -= phases; base += 1; }
       const row = phase * taps;
       let acc = 0;
       const start = base - half + 1;

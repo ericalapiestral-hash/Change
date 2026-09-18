@@ -22,6 +22,7 @@
  */
 import { Biquad, BiquadChain, OnePole, TiltFilter, butterworthHighpass, butterworthLowpass } from './biquad.js';
 import { OverlapAccumulator, RingBuffer } from './buffers.js';
+import { PeakLimiter } from './limiter.js';
 import { YinF0Tracker } from './f0.js';
 import { EpochTracker } from './epochs.js';
 import { CounterNoise, Prng } from './prng.js';
@@ -103,6 +104,25 @@ export const INTONATION_LIMIT_ST = 4;
  */
 export const ASPIRATION_DEPTH = 4;
 
+/**
+ * Output ceiling, and how far ahead the limiter looks to reach it.
+ *
+ * 1.5 ms is enough for the gain to arrive before any peak a voice can produce
+ * and short enough to disappear into a budget that is already 60 ms. The
+ * static soft clipper this replaced distorted by construction: -31 dB of total
+ * harmonic distortion at full scale, -18 dB at 1.4x, -13 dB at 2x, all of
+ * which shouting into a microphone reaches.
+ */
+export const LIMITER_CEILING = 0.97;
+export const LIMITER_LOOKAHEAD_MS = 1.5;
+export const LIMITER_RELEASE_MS = 80;
+
+/**
+ * Where the soft clipper now sits: above the limiter's guaranteed ceiling, so
+ * it is a backstop against arithmetic rather than part of the sound.
+ */
+export const SAFETY_CEILING = 0.995;
+
 const MARK_CAPACITY = 1024;
 const FRAME_CAPACITY = 256;
 
@@ -110,7 +130,7 @@ export const DEFAULT_PROFILE = {
   pitchSemitones: 0,
   formantSemitones: 0,
   f0Min: 75,
-  f0Max: 500,
+  f0Max: 800,
   shiftUnvoiced: false,
   breathiness: 0,
   // Scale on the speaker's pitch range, separately from its centre. Set at
@@ -217,13 +237,17 @@ export class VoiceChanger {
       epochSlack + this.maxHalf,
       this.f0.lookahead + this.f0Hop + this.onsetLookahead,
     );
-    this.latencySamples = this.maxWindowHalf + markLag + this.f0Hop;
+    // The analysis delay.  The limiter carries its own look-ahead on top,
+    // which is why `latencySamples` below is a getter rather than this field:
+    // the padding fed through the buffers at construction is this one, and
+    // reporting the total here would delay everything twice.
+    this.analysisLatency = this.maxWindowHalf + markLag + this.f0Hop;
     // Retention only costs memory, not delay, so it is set generously: a
     // voiced onset lengthens grains abruptly and the occasional grain lands
     // just behind the read cursor.
     this.accRetention = this.maxWindowHalf + this.maxHalf + this.f0Hop;
 
-    const capacity = Math.max(1 << 14, 8 * this.latencySamples);
+    const capacity = Math.max(1 << 14, 8 * this.analysisLatency);
     this.in = new RingBuffer(capacity);
     this.dry = new RingBuffer(capacity);
     this.acc = new OverlapAccumulator(capacity);
@@ -278,6 +302,14 @@ export class VoiceChanger {
     ]);
     this.breathEnv = new OnePole(sampleRate, 0.010);
     this.tilt = new TiltFilter(sampleRate, p.tiltDb);
+    this.limiter = new PeakLimiter(sampleRate, LIMITER_CEILING,
+      LIMITER_LOOKAHEAD_MS, LIMITER_RELEASE_MS);
+    // The dry signal the worklet A/Bs against has to come out at the same
+    // moment as the wet one, and the limiter moved the wet path 1.5 ms later.
+    // It is delayed, not limited: the point of the comparison is to hear the
+    // input untouched.
+    this.dryDelayBuf = new Float64Array(this.limiter.latencySamples);
+    this.dryDelayPos = 0;
     this.noiseScratch = new Float64Array(4096);
     this.envScratch = new Float64Array(4096);
     this.keyScratch = new Float64Array(4096);
@@ -290,6 +322,9 @@ export class VoiceChanger {
     this.reset();
     this.prime();
   }
+
+  /** Delay from input to output: the analysis budget plus the limiter's. */
+  get latencySamples() { return this.analysisLatency + this.limiter.latencySamples; }
 
   get latencyMs() { return (1000 * this.latencySamples) / this.sampleRate; }
 
@@ -359,6 +394,9 @@ export class VoiceChanger {
     this.breath.reset();
     this.breathKey.reset();
     this.tilt.reset();
+    this.limiter.reset();
+    this.dryDelayBuf.fill(0);
+    this.dryDelayPos = 0;
     // null until the first voiced mark, so expansion starts from the speaker's
     // actual pitch rather than sliding down from a guess.
     this.logPeriodMean = null;
@@ -406,7 +444,7 @@ export class VoiceChanger {
    */
   prime() {
     if (this.primed) return;
-    const pad = this.latencySamples;
+    const pad = this.analysisLatency;
     const zeros = new Float64Array(Math.min(pad, 4096));
     let left = pad;
     while (left > 0) {
@@ -463,8 +501,27 @@ export class VoiceChanger {
       if (breathy) this._addAspiration(wet, n);
     }
 
+    // Delay the dry path to match; see the constructor.
+    const dryBuf = this.dryDelayBuf;
+    if (dryBuf.length) {
+      let pos = this.dryDelayPos;
+      for (let i = 0; i < n; i++) {
+        const older = dryBuf[pos];
+        dryBuf[pos] = dry[i];
+        pos = pos + 1 === dryBuf.length ? 0 : pos + 1;
+        dry[i] = older;
+      }
+      this.dryDelayPos = pos;
+    }
+
+    // Limit, then clip.  The limiter is what keeps a shout intact; the clipper
+    // is what keeps a bug from reaching the speakers.
     const g = this.gain;
-    for (let i = 0; i < n; i++) output[i] = softClip(wet[i] * g);
+    for (let i = 0; i < n; i++) wet[i] *= g;
+    this.limiter.process(wet, n);
+    for (let i = 0; i < n; i++) {
+      output[i] = softClip(wet[i], SAFETY_CEILING, LIMITER_CEILING);
+    }
     this.outPos += n;
     this._prune();
     return n;

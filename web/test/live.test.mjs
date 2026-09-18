@@ -44,9 +44,16 @@ before(async () => {
 
   await page.selectOption('#preset', 'male_to_female');
   await page.click('#power');
-  // Let the fake microphone deliver enough audio for pitch tracking to settle.
+  // Wait for audio to be coming out, not just going in. Waiting only for a
+  // pitch reading is a race: the tracker sees the microphone about 60 ms
+  // before the first converted sample leaves the far end of the delay, so the
+  // metrics window the assertions land on could still be reporting priming
+  // silence. It held until the limiter added 1.5 ms and it stopped holding.
   await page.waitForFunction(
-    () => window.natvoxTest.snapshot().metrics.f0 > 0,
+    () => {
+      const { metrics } = window.natvoxTest.snapshot();
+      return metrics.f0 > 0 && metrics.peakOut > 0;
+    },
     null, { timeout: 15000 },
   );
 });

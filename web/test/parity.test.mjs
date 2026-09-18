@@ -63,15 +63,22 @@ describe('JavaScript engine matches the Python reference', () => {
         energy += expected[i] * expected[i];
       }
       const residualDb = 10 * Math.log10(error / Math.max(energy, 1e-30) + 1e-30);
-      // Most cases land below -100 dB; one reaches -95. That remainder is the
-      // last-bit disagreement between two languages' floating point,
-      // accumulated over a second of audio and then amplified by the discrete
-      // choices it feeds - which pitch mark is nearest, which kernel phase is
-      // closest. It is not a structural difference: grain positions, lengths
-      // and counts are identical, and the kernels themselves agree to 1e-19.
-      // -90 dB is two orders of magnitude below anything audible and still
-      // tight enough that a real porting mistake could not hide under it.
-      assert.ok(residualDb < -90,
+      // Every case lands at -151 to -152 dB, which is the precision of the
+      // float32 files the reference is stored in: the two implementations
+      // agree as exactly as this comparison can express.
+      //
+      // The threshold used to be -90 dB, to accommodate one case that reached
+      // -93. That was not floating-point noise, as the comment here used to
+      // claim. It was two real defects that only a sample-level comparison
+      // could see, both invisible to every artifact metric in the package:
+      // Python rounded halves to even where JavaScript rounds them up, and the
+      // resampler clamped a fraction that rounded up to a whole sample instead
+      // of carrying it, which reconstructed a grain 1/512 of a sample away
+      // from where it was asked for. Fixing them moved the worst case by
+      // 58 dB. The threshold is set where the agreement actually is, so that
+      // the next such defect shows up as a failure rather than as a comment
+      // explaining why 3 dB of margin is fine.
+      assert.ok(residualDb < -140,
         `residual ${residualDb.toFixed(1)} dB, worst sample ${worst.toExponential(2)}`);
     });
   }

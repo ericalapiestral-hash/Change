@@ -14,6 +14,7 @@ import { Prng } from '../dsp/prng.js';
 import { WindowScratch } from '../dsp/windows.js';
 import { GrainResampler, buildKernel } from '../dsp/resampler.js';
 import { OverlapAccumulator, RingBuffer } from '../dsp/buffers.js';
+import { PeakLimiter } from '../dsp/limiter.js';
 import { Biquad, OnePole, butterworthHighpass, butterworthLowpass } from '../dsp/biquad.js';
 import { YinF0Tracker } from '../dsp/f0.js';
 import { EpochTracker } from '../dsp/epochs.js';
@@ -469,4 +470,103 @@ describe('VoiceChanger', () => {
       assert.ok(Math.abs(first[i] - again[i]) < 1e-12, `sample ${i}`);
     }
   });
+});
+
+describe('peak limiter', () => {
+  const SR = 48000;
+  const run = (limiter, x, block) => {
+    const out = new Float64Array(x.length);
+    for (let i = 0; i < x.length; i += block) {
+      const n = Math.min(block, x.length - i);
+      const chunk = new Float64Array(n);
+      for (let j = 0; j < n; j++) chunk[j] = x[i + j];
+      limiter.process(chunk, n);
+      out.set(chunk, i);
+    }
+    return out;
+  };
+  const tone = (level, hz = 200, n = SR) => {
+    const x = new Float64Array(n);
+    for (let i = 0; i < n; i++) x[i] = level * Math.sin((2 * Math.PI * hz * i) / SR);
+    return x;
+  };
+
+  for (const level of [0.5, 1, 4, 40]) {
+    test(`the ceiling holds at ${level}x full scale`, () => {
+      const limiter = new PeakLimiter(SR);
+      const out = run(limiter, tone(level), 512);
+      let peak = 0;
+      for (const v of out) peak = Math.max(peak, Math.abs(v));
+      assert.ok(peak <= limiter.ceiling + 1e-12, `peak ${peak}`);
+    });
+  }
+
+  test('below the ceiling it is a pure delay', () => {
+    const limiter = new PeakLimiter(SR);
+    const x = tone(0.9 * 0.97, 200, 4096);
+    const out = run(limiter, x, 256);
+    let worst = 0;
+    for (let i = limiter.latencySamples; i < x.length; i++) {
+      worst = Math.max(worst, Math.abs(out[i] - x[i - limiter.latencySamples]));
+    }
+    assert.equal(worst, 0, `a limiter that touches quiet audio is a compressor`);
+  });
+
+  for (const block of [1, 64, 333, 4096, 12000]) {
+    test(`the result does not depend on a block size of ${block}`, () => {
+      const x = tone(2.0);
+      for (let i = 0; i < x.length; i++) {
+        x[i] *= 0.2 + Math.abs(Math.sin((2 * Math.PI * 3 * i) / SR));
+      }
+      const a = run(new PeakLimiter(SR), x, block);
+      const b = run(new PeakLimiter(SR), x, 1024);
+      let worst = 0;
+      for (let i = 0; i < x.length; i++) worst = Math.max(worst, Math.abs(a[i] - b[i]));
+      assert.ok(worst < 1e-12, `${worst}`);
+    });
+  }
+
+  test('it recovers between shouts', () => {
+    const limiter = new PeakLimiter(SR);
+    const x = tone(1);
+    for (let i = 0; i < x.length; i++) {
+      x[i] *= i > 0.2 * SR && i < 0.3 * SR ? 3 : 0.2;
+    }
+    const before = Float64Array.from(x);
+    const out = run(limiter, x, 256);
+    let after = 0, quiet = 0;
+    for (let i = 0.5 * SR; i < 0.9 * SR; i++) {
+      after = Math.max(after, Math.abs(out[i]));
+      quiet = Math.max(quiet, Math.abs(before[i]));
+    }
+    assert.ok(after / quiet > 0.99, `still ducked by ${(20 * Math.log10(after / quiet)).toFixed(2)} dB`);
+  });
+});
+
+describe('resampler fraction', () => {
+  const grain = (n = 576) => {
+    const x = new Float64Array(n);
+    let seed = 7;
+    for (let i = 0; i < n; i++) {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      const w = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / n);
+      x[i] = ((seed / 0x7fffffff) * 2 - 1) * w;
+    }
+    return x;
+  };
+
+  for (const delay of [0, 1e-9, 1e-6, 1e-4, 9.7e-4]) {
+    test(`a delay of ${delay} is a passthrough`, () => {
+      // It used to be a 9.3e-3 error, for every sample of the grain at once:
+      // a small positive delay lands just under a whole sample, which rounds
+      // up to the phase past the end of the table and was clamped back to the
+      // last one - reconstructing the grain 1/512 of a sample off.
+      const x = grain();
+      const out = new Float64Array(x.length);
+      new GrainResampler(1).resample(x, x.length, x.length, delay, out);
+      let worst = 0;
+      for (let i = 0; i < x.length; i++) worst = Math.max(worst, Math.abs(out[i] - x[i]));
+      assert.ok(worst < 1e-12, `${worst}`);
+    });
+  }
 });

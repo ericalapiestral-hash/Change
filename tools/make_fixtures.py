@@ -37,7 +37,15 @@ SR = 48000
 #: but because a mismatch would hide a defect that *did* depend on it.
 BLOCK = 128
 
-SIGNALS = ("speech", "noise", "creak")
+SIGNALS = ("speech", "noise", "creak", "loud")
+
+#: Inputs derived from another input, created here if missing.  ``loud`` exists
+#: because every other fixture sits below the output ceiling, so the limiter --
+#: the stage that decides what happens when someone shouts -- was not covered by
+#: the comparison at all.  At this scale it is pulling the gain down by about
+#: 10 dB, which is where two implementations of a running minimum and a box
+#: average have somewhere to disagree.
+DERIVED = {"loud": ("speech", 4.0)}
 
 #: Chosen to cover each path rather than to be a catalogue: no shift at all,
 #: a small one, a large one in each direction, consonant shifting on and off,
@@ -87,8 +95,16 @@ def read_f32(path: Path) -> np.ndarray:
 
 def main() -> int:
     for signal in SIGNALS:
-        if not (FIXTURES / f"in_{signal}.f32").exists():
-            raise SystemExit(f"missing input fixture in_{signal}.f32")
+        target = FIXTURES / f"in_{signal}.f32"
+        if target.exists():
+            continue
+        if signal in DERIVED:
+            source, scale = DERIVED[signal]
+            payload = read_f32(FIXTURES / f"in_{source}.f32") * scale
+            target.write_bytes(np.asarray(payload, dtype="<f4").tobytes())
+            print(f"created  {target.name}  ({source} x {scale:g})")
+            continue
+        raise SystemExit(f"missing input fixture in_{signal}.f32")
 
     cases = []
     for signal in SIGNALS:

@@ -33,6 +33,7 @@ from .dsp.util import (
     RingBuffer,
     RmsMatcher,
     TiltFilter,
+    round_half_up,
     soft_clip,
 )
 
@@ -175,10 +176,10 @@ class VoiceChanger:
         self._epochs = EpochTracker()
         self._highpass = BiquadHighpass(sample_rate, p.highpass_hz)
         self._loudness = RmsMatcher(sample_rate)
-        self._f0_hop = max(1, int(round(F0_HOP_SECONDS * sample_rate)))
-        self._onset_lookahead = max(0, int(round(p.onset_lookahead_ms * sample_rate / 1000.0)))
-        self._transient_window = max(4, int(round(TRANSIENT_WINDOW_SECONDS * sample_rate)))
-        self._unvoiced_hop = max(8, int(round(UNVOICED_HOP_SECONDS * sample_rate)))
+        self._f0_hop = max(1, round_half_up((F0_HOP_SECONDS * sample_rate)))
+        self._onset_lookahead = max(0, round_half_up((p.onset_lookahead_ms * sample_rate / 1000.0)))
+        self._transient_window = max(4, round_half_up((TRANSIENT_WINDOW_SECONDS * sample_rate)))
+        self._unvoiced_hop = max(8, round_half_up((UNVOICED_HOP_SECONDS * sample_rate)))
 
         # Worst-case grain reach decides the delay: emitting a sample needs
         # every grain that overlaps it, and the grain furthest ahead was cut
@@ -189,7 +190,7 @@ class VoiceChanger:
         longest_period = float(self._f0.tau_max)
         self._max_half = max(
             grain_half_length(longest_period, self._ratio_lo, self._formant_ratio),
-            int(round(self._unvoiced_hop * (1.0 + UNVOICED_JITTER))),
+            round_half_up((self._unvoiced_hop * (1.0 + UNVOICED_JITTER))),
         )
         # Grains are laid down centred on their target, and lowering formants
         # stretches them, so the furthest a grain reaches past its centre is
@@ -437,9 +438,9 @@ class VoiceChanger:
                 # -- a real defect, and one that only appears at small block
                 # sizes, where the buffer has advanced less by the time the
                 # grain is cut.
-                search = int(round(period * self._epochs.search_fraction))
-                reach = search + max(half, int(round(period * 0.85)))
-                predicted = self._last_mark + int(round(period))
+                search = round_half_up((period * self._epochs.search_fraction))
+                reach = search + max(half, round_half_up((period * 0.85)))
+                predicted = self._last_mark + round_half_up((period))
                 if predicted + reach > end:
                     return
                 if self._last_voiced:
@@ -453,11 +454,11 @@ class VoiceChanger:
                 period = float(self._unvoiced_hop)
                 # Test the worst-case gap before drawing, so a draw is never
                 # consumed by a mark we then decline to create.
-                widest = int(round(self._unvoiced_hop * (1.0 + UNVOICED_JITTER)))
+                widest = round_half_up((self._unvoiced_hop * (1.0 + UNVOICED_JITTER)))
                 if self._last_mark + widest + self._unvoiced_hop > end:
                     return
                 spread = 1.0 + self._jitter_rng.range(-UNVOICED_JITTER, UNVOICED_JITTER)
-                mark = self._last_mark + max(8, int(round(self._unvoiced_hop * spread)))
+                mark = self._last_mark + max(8, round_half_up((self._unvoiced_hop * spread)))
                 deviation = 0.0
 
             self._marks.append(Mark(mark, period, frame.voiced, deviation, ratio))

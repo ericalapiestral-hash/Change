@@ -93,8 +93,20 @@ class GrainResampler:
         step = n / m
         pos = (np.arange(m) - fractional_delay) * step
         base = np.floor(pos).astype(np.int64)
-        phase = np.minimum(np.round((pos - base) * self.phases).astype(np.int64),
-                           self.phases - 1)
+        # floor(x + 0.5), not round(): numpy rounds halves to even and
+        # JavaScript's Math.round rounds them up, and a phase index off by one
+        # is a whole grain resampled differently.  See util.round_half_up.
+        phase = np.floor((pos - base) * self.phases + 0.5).astype(np.int64)
+        # A fraction that rounds up to a whole sample is the *next* sample at
+        # phase zero, not this one at the last phase.  Clamping it instead --
+        # which is what this did -- reconstructs the point 1/512 of a sample
+        # away from where it was asked for, and for a small positive delay
+        # every sample in the grain lands there at once: measured at 9.3e-3 of
+        # error against an exact identity, for a delay of one part in a
+        # million.  Carrying the rounding into `base` is both correct and what
+        # makes a vanishing delay come out as a passthrough.
+        base = base + phase // self.phases
+        phase = phase % self.phases
         # The grain is Hann-windowed and so is ~zero at both ends, which makes
         # zero extension indistinguishable from the periodic extension a
         # transform-based resampler would assume.

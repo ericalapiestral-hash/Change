@@ -21,7 +21,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .util import WINDOWS, resample_grain
+from .util import WINDOWS, resample_grain, round_half_up
 
 
 @dataclass(frozen=True)
@@ -69,7 +69,7 @@ def grain_half_length(period: float, pitch_ratio: float, formant_ratio: float,
     latency; 1.6 was measured, not assumed.
     """
     scale = min(max(1.0, formant_ratio / max(pitch_ratio, 1e-6)), max_scale)
-    return max(8, int(round(period * scale)))
+    return max(8, round_half_up((period * scale)))
 
 
 def build_grain(view, mark: int, half: int, formant_ratio: float,
@@ -89,11 +89,15 @@ def build_grain(view, mark: int, half: int, formant_ratio: float,
     grain = raw * window
 
     same_length = abs(formant_ratio - 1.0) < 1e-4
-    if same_length and abs(fractional_delay) <= 1e-4:
+    # Exactly zero, not "small": the resampler is an identity at phase zero, so
+    # this is only an optimisation, and a threshold here would be a step in the
+    # output as the delay crosses it -- which is what it was, and what made the
+    # two implementations disagree by a whole grain.
+    if same_length and fractional_delay == 0.0:
         return grain, window
 
     # Shorter grain -> spectrum stretched upward -> formants raised.
-    out_len = length if same_length else max(8, int(round(length / formant_ratio)))
+    out_len = length if same_length else max(8, round_half_up((length / formant_ratio)))
     if resampler is not None:
         resampled = resampler(grain, out_len, fractional_delay)
     else:

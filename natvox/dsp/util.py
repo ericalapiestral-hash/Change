@@ -12,6 +12,24 @@ from scipy import signal
 EPS = 1e-12
 
 
+def round_half_up(x: float) -> int:
+    """Round to the nearest integer, halves away from zero.
+
+    Python's built-in ``round`` and numpy's both round halves to *even*;
+    JavaScript's ``Math.round`` rounds them up.  Every integer in this engine
+    that is derived from a float -- a grain length, a search span, a resampler
+    phase -- is a discrete decision, and a discrete decision made differently
+    by the two implementations does not produce a small difference.  It
+    produces a whole grain of difference: measured at -75 dB of residual
+    between the two ports on a downward shift, against -152 dB elsewhere, from
+    a single kernel phase landing exactly on a half step.
+
+    Everything rounded here is non-negative, so this is exactly what
+    ``Math.round`` does, and the browser build is left alone.
+    """
+    return int(np.floor(x + 0.5))
+
+
 def hann(n: int) -> np.ndarray:
     """Periodic Hann window of length ``n``, zero at both endpoints.
 
@@ -403,7 +421,7 @@ class PeakLimiter:
     def __init__(self, sample_rate: int, ceiling: float = 0.97,
                  lookahead_ms: float = 1.5, release_ms: float = 80.0) -> None:
         self.ceiling = float(ceiling)
-        self.look = max(1, int(round(lookahead_ms * sample_rate / 1000.0)))
+        self.look = max(1, round_half_up(lookahead_ms * sample_rate / 1000.0))
         self.box = self.look
         self.release = float(np.exp(-1000.0 / (release_ms * sample_rate)))
         self.reset()
@@ -435,7 +453,14 @@ class PeakLimiter:
         required = ceiling / np.maximum(np.abs(x), ceiling)
         reduction = 1.0 - required
 
-        decay = self.release ** np.arange(n, dtype=np.float64)
+        # Built as a cumulative product rather than a power, because a
+        # cumulative product is a fixed sequence of multiplications that the
+        # browser build reproduces exactly with a loop.  Two implementations of
+        # `a ** k` need not agree in the last bit, and this feeds a comparison.
+        decay = np.empty(n)
+        decay[0] = 1.0
+        if n > 1:
+            np.cumprod(np.full(n - 1, self.release), out=decay[1:])
         held = np.maximum.accumulate(reduction / decay)
         y = decay * np.maximum(held, self._held * self.release)
         self._held = float(y[-1])

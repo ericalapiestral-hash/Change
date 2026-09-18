@@ -317,21 +317,38 @@ reconstructs to −322 dB. It has **not** been run against a real checkpoint.
 
 ```bash
 pip install -e '.[dev]'
-pytest                      # 328 tests
+pytest                      # 393 tests
 python tools/bench.py       # artifact measurements
 
-cd web && npm install && npm test     # 100 more, including the live path
+cd web && npm install && npm test     # 127 more, including the live path
 ```
 
 The browser build is a port, and a port degrades quietly: a window off by one,
 a filter designed a different way, a random stream consumed in a different
 order. So the two are diffed sample for sample against committed reference
 vectors, which is why both share a portable random generator and identical
-transform sizes. The current residual is −152 dB, the float32 precision of the
-fixture files themselves. Regenerate them with `python tools/make_fixtures.py`
-whenever the Python engine's output legitimately changes, and commit the diff
-with it — the inputs are held fixed so that a refresh shows up as a change to
-the reference output and nothing else.
+transform sizes. Every case now lands at −151 to −152 dB, the float32 precision
+of the fixture files themselves.
+
+That comparison earns its keep. It was the only measurement in the package that
+could see either of two real defects, both invisible to every artifact metric
+here:
+
+- Python rounds halves to even; JavaScript's `Math.round` rounds them up. Every
+  integer derived from a float in this engine — a grain length, a search span,
+  a kernel phase — is a discrete decision, and two implementations deciding
+  differently do not differ by a little.
+- The resampler clamped a fraction that rounded up to a whole sample instead of
+  carrying it into the sample index. For a small positive delay that puts
+  *every* sample of the grain on the clamp at once, reconstructing it 1/512 of
+  a sample from where it was asked for: 9.3e-3 of error for a delay of one part
+  in a million.
+
+Fixing them moved the worst case by 58 dB, and moved no artifact metric at all
+— the second one bit about one grain in a thousand. Regenerate the fixtures
+with `python tools/make_fixtures.py` whenever the Python engine's output
+legitimately changes, and commit the diff with it; the inputs are held fixed so
+that a refresh shows up as a change to the reference output and nothing else.
 
 `tools/synth_speech.py` generates the reference utterance: a source-filter
 synthesiser with gliding formants, jitter, shimmer, fricatives and pauses. A
@@ -362,8 +379,11 @@ off" is a statement that can be checked rather than an impression.
   gain reduction and not distortion: driving a band-limited vowel to four
   times full scale manufactures −80 to −83 dB of out-of-band energy, against
   −28 dB for the static soft clipper this replaced. It costs 1.5 ms of the
-  latency below. What it cannot fix is a microphone that clipped before the
-  engine saw it.
+  latency below. Every preset also tracks pitch to 800 Hz, because a true F0
+  above the ceiling is not read as "too high" — the tracker locks onto twice
+  the period and reports an octave *down*, which is the growl a voice changer
+  makes when it is shouted into. What none of this can fix is a microphone that
+  clipped before the engine saw it.
 - **Large shifts degrade.** Past roughly ±8 semitones of pitch or ±5 of
   formants, no time-domain method stays transparent, because the vocal-tract
   response being stretched stops matching a physically plausible speaker. The

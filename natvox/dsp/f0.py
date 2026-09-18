@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.fft import irfft, rfft
 
-from .util import WINDOWS, EPS
+from .util import WINDOWS, EPS, round_half_up
 
 #: Voiced speech puts most of its energy under this frequency (the fundamental
 #: plus F1); fricatives put almost none there.  Used as a second, independent
@@ -255,7 +255,7 @@ class YinF0Tracker:
 
         cmnd = self._cmnd(x)
         tau = self._pick_tau(cmnd)
-        idx = int(round(tau))
+        idx = round_half_up(tau)
         periodicity = 0.0
         if 0 < idx < cmnd.size:
             periodicity = float(np.clip(1.0 - cmnd[idx], 0.0, 1.0))

@@ -122,3 +122,34 @@ export function residualDb(a, b, from = 0, to = a.length) {
   for (let i = from; i < to; i++) { const d = a[i] - b[i]; num += d * d; den += b[i] * b[i]; }
   return 10 * Math.log10(num / Math.max(den, 1e-30) + 1e-30);
 }
+
+/**
+ * Energy above `edgeHz` as a share of the whole, in dB.
+ *
+ * Feed the engine something with nothing up there and whatever comes back was
+ * manufactured. It is the only view of clipping any measurement here has:
+ * waveshaping products land on exact multiples of F0, so every harmonic
+ * measure counts them as signal and reads *better* as the distortion gets
+ * worse.
+ */
+export function outOfBandDb(samples, sampleRate = 48000, edgeHz = 6500) {
+  const size = 1 << 14;
+  const fft = new RealFFT(size);
+  const frame = new Float64Array(size);
+  const re = new Float64Array(size / 2 + 1);
+  const im = new Float64Array(size / 2 + 1);
+  let above = 0, total = 0;
+  const hop = size / 2;
+  for (let start = 0; start + size <= samples.length; start += hop) {
+    for (let i = 0; i < size; i++) {
+      frame[i] = samples[start + i] * (0.5 - 0.5 * Math.cos((2 * Math.PI * i) / size));
+    }
+    fft.forward(frame, size, re, im);
+    for (let k = 1; k < size / 2; k++) {
+      const power = re[k] * re[k] + im[k] * im[k];
+      total += power;
+      if ((k * sampleRate) / size > edgeHz) above += power;
+    }
+  }
+  return 10 * Math.log10(above / Math.max(total, 1e-30) + 1e-30);
+}

@@ -9,7 +9,7 @@
     "pitchSemitones": 0.0,
     "formantSemitones": 0.0,
     "f0Min": 75.0,
-    "f0Max": 500.0,
+    "f0Max": 800.0,
     "shiftUnvoiced": false,
     "breathiness": 0.0,
     "intonation": 1.0,
@@ -22,7 +22,7 @@
      "formantSt": 0
     }
    },
-   "latency": 2788
+   "latency": 2860
   },
   {
    "signal": "speech",
@@ -31,7 +31,7 @@
     "pitchSemitones": 1.5,
     "formantSemitones": 1.0,
     "f0Min": 75.0,
-    "f0Max": 500.0,
+    "f0Max": 800.0,
     "shiftUnvoiced": false,
     "breathiness": 0.0,
     "intonation": 1.0,
@@ -44,7 +44,7 @@
      "formantSt": 0
     }
    },
-   "latency": 2788
+   "latency": 2860
   },
   {
    "signal": "speech",
@@ -53,7 +53,7 @@
     "pitchSemitones": 3.0,
     "formantSemitones": 2.2,
     "f0Min": 75.0,
-    "f0Max": 550.0,
+    "f0Max": 800.0,
     "shiftUnvoiced": false,
     "breathiness": 0.0,
     "intonation": 1.0,
@@ -66,7 +66,7 @@
      "formantSt": 0
     }
    },
-   "latency": 2788
+   "latency": 2860
   },
   {
    "signal": "speech",
@@ -75,7 +75,7 @@
     "pitchSemitones": 7.0,
     "formantSemitones": 2.6,
     "f0Min": 70.0,
-    "f0Max": 400.0,
+    "f0Max": 800.0,
     "shiftUnvoiced": true,
     "breathiness": 0.02,
     "intonation": 1.0,
@@ -88,7 +88,7 @@
      "formantSt": 0
     }
    },
-   "latency": 2926
+   "latency": 2998
   },
   {
    "signal": "speech",
@@ -97,7 +97,7 @@
     "pitchSemitones": -7.0,
     "formantSemitones": -2.6,
     "f0Min": 110.0,
-    "f0Max": 500.0,
+    "f0Max": 800.0,
     "shiftUnvoiced": true,
     "breathiness": 0.0,
     "intonation": 1.0,
@@ -110,7 +110,7 @@
      "formantSt": 0
     }
    },
-   "latency": 2398
+   "latency": 2470
   },
   {
    "signal": "speech",
@@ -119,7 +119,7 @@
     "pitchSemitones": -3.5,
     "formantSemitones": 2.0,
     "f0Min": 70.0,
-    "f0Max": 500.0,
+    "f0Max": 800.0,
     "shiftUnvoiced": true,
     "breathiness": 0.0,
     "intonation": 1.0,
@@ -132,7 +132,7 @@
      "formantSt": 0
     }
    },
-   "latency": 3183
+   "latency": 3255
   },
   {
    "signal": "speech",
@@ -141,7 +141,7 @@
     "pitchSemitones": 4.5,
     "formantSemitones": 1.8,
     "f0Min": 70.0,
-    "f0Max": 400.0,
+    "f0Max": 800.0,
     "shiftUnvoiced": false,
     "breathiness": 0.08,
     "intonation": 1.15,
@@ -154,7 +154,7 @@
      "formantSt": 0
     }
    },
-   "latency": 2980
+   "latency": 3052
   },
   {
    "signal": "speech",
@@ -163,7 +163,7 @@
     "pitchSemitones": 7.0,
     "formantSemitones": 2.6,
     "f0Min": 70.0,
-    "f0Max": 400.0,
+    "f0Max": 800.0,
     "shiftUnvoiced": true,
     "breathiness": 0.12,
     "intonation": 1.22,
@@ -176,7 +176,7 @@
      "formantSt": 0
     }
    },
-   "latency": 2926
+   "latency": 2998
   },
   {
    "signal": "noise",
@@ -185,7 +185,7 @@
     "pitchSemitones": 0.0,
     "formantSemitones": 0.0,
     "f0Min": 75.0,
-    "f0Max": 500.0,
+    "f0Max": 800.0,
     "shiftUnvoiced": false,
     "breathiness": 0.0,
     "intonation": 1.0,
@@ -198,7 +198,7 @@
      "formantSt": 0
     }
    },
-   "latency": 2788
+   "latency": 2860
   },
   {
    "signal": "noise",
@@ -207,7 +207,7 @@
     "pitchSemitones": 1.5,
     "formantSemitones": 1.0,
     "f0Min": 75.0,
-    "f0Max": 500.0,
+    "f0Max": 800.0,
     "shiftUnvoiced": false,
     "breathiness": 0.0,
     "intonation": 1.0,
@@ -220,7 +220,7 @@
      "formantSt": 0
     }
    },
-   "latency": 2788
+   "latency": 2860
   },
   {
    "signal": "noise",
@@ -229,7 +229,7 @@
     "pitchSemitones": 3.0,
     "formantSemitones": 2.2,
     "f0Min": 75.0,
-    "f0Max": 550.0,
+    "f0Max": 800.0,
     "shiftUnvoiced": false,
     "breathiness": 0.0,
     "intonation": 1.0,
@@ -242,7 +242,7 @@
      "formantSt": 0
     }
    },
-   "latency": 2788
+   "latency": 2860
   },
   {
    "signal": "noise",
@@ -251,7 +251,7 @@
     "pitchSemitones": 7.0,
     "formantSemitones": 2.6,
     "f0Min": 70.0,
-    "f0Max": 400.0,
+    "f0Max": 800.0,
     "shiftUnvoiced": true,
     "breathiness": 0.02,
     "intonation": 1.0,
@@ -264,7 +264,7 @@
      "formantSt": 0
     }
    },
-   "latency": 2926
+   "latency": 2998
   },
   {
    "signal": "noise",
@@ -273,7 +273,7 @@
     "pitchSemitones": -7.0,
     "formantSemitones": -2.6,
     "f0Min": 110.0,
-    "f0Max": 500.0,
+    "f0Max": 800.0,
     "shiftUnvoiced": true,
     "breathiness": 0.0,
     "intonation": 1.0,
@@ -286,7 +286,7 @@
      "formantSt": 0
     }
    },
-   "latency": 2398
+   "latency": 2470
   },
   {
    "signal": "noise",
@@ -295,7 +295,7 @@
     "pitchSemitones": -3.5,
     "formantSemitones": 2.0,
     "f0Min": 70.0,
-    "f0Max": 500.0,
+    "f0Max": 800.0,
     "shiftUnvoiced": true,
     "breathiness": 0.0,
     "intonation": 1.0,
@@ -308,7 +308,7 @@
      "formantSt": 0
     }
    },
-   "latency": 3183
+   "latency": 3255
   },
   {
    "signal": "noise",
@@ -317,7 +317,7 @@
     "pitchSemitones": 4.5,
     "formantSemitones": 1.8,
     "f0Min": 70.0,
-    "f0Max": 400.0,
+    "f0Max": 800.0,
     "shiftUnvoiced": false,
     "breathiness": 0.08,
     "intonation": 1.15,
@@ -330,7 +330,7 @@
      "formantSt": 0
     }
    },
-   "latency": 2980
+   "latency": 3052
   },
   {
    "signal": "noise",
@@ -339,7 +339,7 @@
     "pitchSemitones": 7.0,
     "formantSemitones": 2.6,
     "f0Min": 70.0,
-    "f0Max": 400.0,
+    "f0Max": 800.0,
     "shiftUnvoiced": true,
     "breathiness": 0.12,
     "intonation": 1.22,
@@ -352,7 +352,7 @@
      "formantSt": 0
     }
    },
-   "latency": 2926
+   "latency": 2998
   },
   {
    "signal": "creak",
@@ -361,7 +361,7 @@
     "pitchSemitones": 0.0,
     "formantSemitones": 0.0,
     "f0Min": 75.0,
-    "f0Max": 500.0,
+    "f0Max": 800.0,
     "shiftUnvoiced": false,
     "breathiness": 0.0,
     "intonation": 1.0,
@@ -374,7 +374,7 @@
      "formantSt": 0
     }
    },
-   "latency": 2788
+   "latency": 2860
   },
   {
    "signal": "creak",
@@ -383,7 +383,7 @@
     "pitchSemitones": 1.5,
     "formantSemitones": 1.0,
     "f0Min": 75.0,
-    "f0Max": 500.0,
+    "f0Max": 800.0,
     "shiftUnvoiced": false,
     "breathiness": 0.0,
     "intonation": 1.0,
@@ -396,7 +396,7 @@
      "formantSt": 0
     }
    },
-   "latency": 2788
+   "latency": 2860
   },
   {
    "signal": "creak",
@@ -405,7 +405,7 @@
     "pitchSemitones": 3.0,
     "formantSemitones": 2.2,
     "f0Min": 75.0,
-    "f0Max": 550.0,
+    "f0Max": 800.0,
     "shiftUnvoiced": false,
     "breathiness": 0.0,
     "intonation": 1.0,
@@ -418,7 +418,7 @@
      "formantSt": 0
     }
    },
-   "latency": 2788
+   "latency": 2860
   },
   {
    "signal": "creak",
@@ -427,7 +427,7 @@
     "pitchSemitones": 7.0,
     "formantSemitones": 2.6,
     "f0Min": 70.0,
-    "f0Max": 400.0,
+    "f0Max": 800.0,
     "shiftUnvoiced": true,
     "breathiness": 0.02,
     "intonation": 1.0,
@@ -440,7 +440,7 @@
      "formantSt": 0
     }
    },
-   "latency": 2926
+   "latency": 2998
   },
   {
    "signal": "creak",
@@ -449,7 +449,7 @@
     "pitchSemitones": -7.0,
     "formantSemitones": -2.6,
     "f0Min": 110.0,
-    "f0Max": 500.0,
+    "f0Max": 800.0,
     "shiftUnvoiced": true,
     "breathiness": 0.0,
     "intonation": 1.0,
@@ -462,7 +462,7 @@
      "formantSt": 0
     }
    },
-   "latency": 2398
+   "latency": 2470
   },
   {
    "signal": "creak",
@@ -471,7 +471,7 @@
     "pitchSemitones": -3.5,
     "formantSemitones": 2.0,
     "f0Min": 70.0,
-    "f0Max": 500.0,
+    "f0Max": 800.0,
     "shiftUnvoiced": true,
     "breathiness": 0.0,
     "intonation": 1.0,
@@ -484,7 +484,7 @@
      "formantSt": 0
     }
    },
-   "latency": 3183
+   "latency": 3255
   },
   {
    "signal": "creak",
@@ -493,7 +493,7 @@
     "pitchSemitones": 4.5,
     "formantSemitones": 1.8,
     "f0Min": 70.0,
-    "f0Max": 400.0,
+    "f0Max": 800.0,
     "shiftUnvoiced": false,
     "breathiness": 0.08,
     "intonation": 1.15,
@@ -506,7 +506,7 @@
      "formantSt": 0
     }
    },
-   "latency": 2980
+   "latency": 3052
   },
   {
    "signal": "creak",
@@ -515,7 +515,7 @@
     "pitchSemitones": 7.0,
     "formantSemitones": 2.6,
     "f0Min": 70.0,
-    "f0Max": 400.0,
+    "f0Max": 800.0,
     "shiftUnvoiced": true,
     "breathiness": 0.12,
     "intonation": 1.22,
@@ -528,7 +528,183 @@
      "formantSt": 0
     }
    },
-   "latency": 2926
+   "latency": 2998
+  },
+  {
+   "signal": "loud",
+   "preset": "off",
+   "profile": {
+    "pitchSemitones": 0.0,
+    "formantSemitones": 0.0,
+    "f0Min": 75.0,
+    "f0Max": 800.0,
+    "shiftUnvoiced": false,
+    "breathiness": 0.0,
+    "intonation": 1.0,
+    "tiltDb": 0.0,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 2860
+  },
+  {
+   "signal": "loud",
+   "preset": "brighter",
+   "profile": {
+    "pitchSemitones": 1.5,
+    "formantSemitones": 1.0,
+    "f0Min": 75.0,
+    "f0Max": 800.0,
+    "shiftUnvoiced": false,
+    "breathiness": 0.0,
+    "intonation": 1.0,
+    "tiltDb": 0.0,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 2860
+  },
+  {
+   "signal": "loud",
+   "preset": "younger",
+   "profile": {
+    "pitchSemitones": 3.0,
+    "formantSemitones": 2.2,
+    "f0Min": 75.0,
+    "f0Max": 800.0,
+    "shiftUnvoiced": false,
+    "breathiness": 0.0,
+    "intonation": 1.0,
+    "tiltDb": 0.0,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 2860
+  },
+  {
+   "signal": "loud",
+   "preset": "male_to_female",
+   "profile": {
+    "pitchSemitones": 7.0,
+    "formantSemitones": 2.6,
+    "f0Min": 70.0,
+    "f0Max": 800.0,
+    "shiftUnvoiced": true,
+    "breathiness": 0.02,
+    "intonation": 1.0,
+    "tiltDb": 0.0,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 2998
+  },
+  {
+   "signal": "loud",
+   "preset": "female_to_male",
+   "profile": {
+    "pitchSemitones": -7.0,
+    "formantSemitones": -2.6,
+    "f0Min": 110.0,
+    "f0Max": 800.0,
+    "shiftUnvoiced": true,
+    "breathiness": 0.0,
+    "intonation": 1.0,
+    "tiltDb": 0.0,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 2470
+  },
+  {
+   "signal": "loud",
+   "preset": "anonymous",
+   "profile": {
+    "pitchSemitones": -3.5,
+    "formantSemitones": 2.0,
+    "f0Min": 70.0,
+    "f0Max": 800.0,
+    "shiftUnvoiced": true,
+    "breathiness": 0.0,
+    "intonation": 1.0,
+    "tiltDb": 0.0,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 3255
+  },
+  {
+   "signal": "loud",
+   "preset": "female_soft",
+   "profile": {
+    "pitchSemitones": 4.5,
+    "formantSemitones": 1.8,
+    "f0Min": 70.0,
+    "f0Max": 800.0,
+    "shiftUnvoiced": false,
+    "breathiness": 0.08,
+    "intonation": 1.15,
+    "tiltDb": 1.2,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 3052
+  },
+  {
+   "signal": "loud",
+   "preset": "female",
+   "profile": {
+    "pitchSemitones": 7.0,
+    "formantSemitones": 2.6,
+    "f0Min": 70.0,
+    "f0Max": 800.0,
+    "shiftUnvoiced": true,
+    "breathiness": 0.12,
+    "intonation": 1.22,
+    "tiltDb": 2.0,
+    "outputGainDb": 0.0,
+    "onsetLookaheadMs": 8.0,
+    "highpassHz": 60.0,
+    "range": {
+     "pitchSt": 0,
+     "formantSt": 0
+    }
+   },
+   "latency": 2998
   }
  ]
 }

@@ -222,3 +222,90 @@ class TestGrainGeometry:
         assert nearest_mark(marks, 140) == 1
         assert nearest_mark(marks, 190) == 2
         assert nearest_mark(marks, 1000) == 2
+
+
+class TestResamplerFraction:
+    """The sub-sample delay, which is where a whole grain can go wrong at once.
+
+    A grain is placed at a fractional position and the fraction is carried in
+    the kernel phase rather than rounded away, because rounding it puts a noise
+    floor about 29 dB under the voice.  The phase table has 512 entries, so the
+    fraction is quantised -- and the entry *past* the last one is not the last
+    one again, it is the next sample at phase zero.
+    """
+
+    @staticmethod
+    def grain(n=576, seed=3):
+        from natvox.dsp.util import hann
+
+        return np.random.default_rng(seed).standard_normal(n) * hann(n)
+
+    @pytest.mark.parametrize("delay", [0.0, 1e-9, 1e-6, 1e-4, 9.7e-4, 1 / 1024 - 1e-12])
+    def test_a_vanishing_delay_is_a_passthrough(self, delay):
+        """It used to be a 9.3e-3 error instead, and for every sample of the
+        grain at once: `pos = (k - delay) * step` puts a small positive delay
+        just under a whole sample, which rounded up to the phase past the end
+        of the table and was clamped back to the last one.  The grain then came
+        out reconstructed 1/512 of a sample from where it was asked for.
+        """
+        from natvox.dsp.resample import GrainResampler
+
+        grain = self.grain()
+        out = GrainResampler(1.0)(grain, grain.size, delay)
+        assert np.max(np.abs(out - grain)) < 1e-12, f"delay {delay:g}"
+
+    def test_the_error_grows_smoothly_with_the_delay(self):
+        """No step anywhere: a discontinuity here is a click in the output."""
+        from natvox.dsp.resample import GrainResampler
+
+        grain = self.grain()
+        resampler = GrainResampler(1.0)
+        delays = np.linspace(0.0, 0.02, 41)
+        error = np.array([np.max(np.abs(resampler(grain, grain.size, d) - grain))
+                          for d in delays])
+        assert np.all(np.diff(error) > -1e-9), "the error must not fall back"
+        jumps = np.diff(error)
+        assert np.max(jumps) < 3.0 * np.median(jumps[jumps > 0]), f"step of {np.max(jumps):.2e}"
+
+    def test_a_whole_sample_of_delay_is_a_whole_sample_of_shift(self):
+        from natvox.dsp.resample import GrainResampler
+
+        grain = self.grain()
+        shifted = GrainResampler(1.0)(grain, grain.size, 1.0)
+        assert np.max(np.abs(shifted[1:-16] - grain[:-17])) < 1e-12
+
+    def test_the_two_halves_of_the_phase_table_meet(self):
+        """Just under a whole sample and just over must agree: they are the
+        same point approached from either side."""
+        from natvox.dsp.resample import GrainResampler
+
+        grain = self.grain()
+        resampler = GrainResampler(1.0)
+        below = resampler(grain, grain.size, 1.0 - 1e-9)
+        above = resampler(grain, grain.size, 1.0 + 1e-9)
+        assert np.max(np.abs(below - above)) < 1e-9
+
+
+class TestRoundingConvention:
+    def test_halves_go_the_way_javascript_sends_them(self):
+        """Python rounds halves to even and JavaScript rounds them up.  Every
+        integer here derived from a float is a discrete decision, and two
+        implementations deciding differently do not differ by a little."""
+        from natvox.dsp.util import round_half_up
+
+        assert [round_half_up(v) for v in (0.5, 1.5, 2.5, 3.5, 200.5)] == [1, 2, 3, 4, 201]
+        assert [round(v) for v in (0.5, 2.5)] == [0, 2]      # what it replaced
+
+    def test_nothing_in_the_dsp_still_uses_the_builtin(self):
+        """A regression here is silent in Python and only shows up as a browser
+        build that disagrees, which is a long way from the cause."""
+        import pathlib
+        import natvox.dsp
+
+        root = pathlib.Path(natvox.dsp.__file__).parent
+        offenders = []
+        for path in list(root.glob("*.py")) + [root.parent / "engine.py"]:
+            for number, line in enumerate(path.read_text().splitlines(), 1):
+                if "int(round(" in line or "np.round(" in line:
+                    offenders.append(f"{path.name}:{number}")
+        assert not offenders, f"use round_half_up instead: {', '.join(offenders)}"
