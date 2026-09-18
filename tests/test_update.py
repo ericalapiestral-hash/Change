@@ -228,9 +228,14 @@ class TestTheRedirect:
 
 
 class TestStaging:
-    def _zip(self, path, names=("natvox.exe", "natvox", "_internal/base.dll")):
+    #: Both launcher names, always.  stage() looks for the one this platform
+    #: uses, so a zip carrying only the other passes on Linux and fails on
+    #: Windows -- which is exactly what happened.
+    LAUNCHERS = ("natvox.exe", "natvox")
+
+    def _zip(self, path, names=("_internal/base.dll",), launchers=True):
         with zipfile.ZipFile(path, "w") as bundle:
-            for name in names:
+            for name in (self.LAUNCHERS if launchers else ()) + tuple(names):
                 bundle.writestr(name, b"x" * 16)
         return path
 
@@ -245,8 +250,7 @@ class TestStaging:
     def test_an_archive_that_writes_outside_itself_is_refused(self, tmp_path):
         install = tmp_path / "natvox"
         install.mkdir()
-        bad = self._zip(tmp_path / "bad.zip",
-                        names=("natvox.exe", "../../escaped.txt"))
+        bad = self._zip(tmp_path / "bad.zip", names=("../../escaped.txt",))
         with pytest.raises(update.UpdateError, match="outside itself"):
             update.stage(bad, install)
         assert not (tmp_path.parent / "escaped.txt").exists()
@@ -256,7 +260,8 @@ class TestStaging:
     def test_an_archive_with_no_program_in_it_is_refused(self, tmp_path):
         install = tmp_path / "natvox"
         install.mkdir()
-        bad = self._zip(tmp_path / "bad.zip", names=("readme.txt",))
+        bad = self._zip(tmp_path / "bad.zip", names=("readme.txt",),
+                        launchers=False)
         with pytest.raises(update.UpdateError, match="has no natvox"):
             update.stage(bad, install)
 
@@ -272,7 +277,7 @@ class TestStaging:
         install = tmp_path / "natvox"
         install.mkdir()
         first = update.stage(self._zip(tmp_path / "a.zip",
-                                       names=("natvox", "gone.txt")), install)
+                                       names=("gone.txt",)), install)
         assert (first / "gone.txt").exists()
         second = update.stage(self._zip(tmp_path / "b.zip"), install)
         assert not (second / "gone.txt").exists()
