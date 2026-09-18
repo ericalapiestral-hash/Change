@@ -415,6 +415,26 @@ class TestTheSwapForReal:
             command + ["999999", str(install), str(staged), "2"],
             capture_output=True, text=True, timeout=120)
 
+    def _log(self, tmp_path):
+        path = tmp_path / "natvox.update.log"
+        return path.read_text() if path.exists() else ""
+
+    def test_it_keeps_a_log_beside_the_install(self, tmp_path):
+        """It runs detached with no console. Without this there is nothing at
+        all to read when it goes wrong, and this is the one component that can
+        leave somebody with no program."""
+        install, staged = self._tree(tmp_path)
+        self._run(install, staged)
+        log = self._log(tmp_path)
+        assert "waiting for pid" in log
+        assert "installed" in log
+        assert str(install) in log and str(staged) in log
+
+    def test_the_log_says_why_it_refused(self, tmp_path):
+        install, staged = self._tree(tmp_path, staged_is_a_build=False)
+        self._run(install, staged)
+        assert "not a natvox build" in self._log(tmp_path)
+
     def test_it_swaps(self, tmp_path):
         install, staged = self._tree(tmp_path)
         result = self._run(install, staged)

@@ -79,8 +79,13 @@ DOWNLOAD_DEADLINE = 900.0
 
 #: Waits for the process to go, then swaps two sibling directories by renaming.
 #:
-#: Every step is checked, because the failure this must not have is "the user
-#: has no program any more".  In particular:
+#: Every step is checked and every step is logged, beside the install, because
+#: this runs detached with no console: when it goes wrong there is otherwise
+#: nothing at all to read, and this is the one component that can leave
+#: somebody with no program.  The log is what the next failure gets debugged
+#: from, including the first time it failed in CI.
+#:
+#: The checks that matter:
 #:
 #:  * `move a b` on Windows puts `a` *inside* `b` when `b` is an existing
 #:    directory, so both destinations are proved gone before either move.
@@ -96,8 +101,13 @@ setlocal
 set "PID=%~1"
 set "INSTALL=%~2"
 set "STAGED=%~3"
-set "OLD=%INSTALL%.old"
 set "LEFT=%~4"
+set "OLD=%INSTALL%.old"
+set "LOG=%INSTALL%.update.log"
+
+echo [%DATE% %TIME%] waiting for pid %PID%>"%LOG%"
+echo   install "%INSTALL%">>"%LOG%"
+echo   staged  "%STAGED%">>"%LOG%"
 
 :wait
 tasklist /FI "PID eq %PID%" 2>nul | find "%PID%" >nul
@@ -105,93 +115,107 @@ if not errorlevel 1 (
   ping -n 2 127.0.0.1 >nul
   goto wait
 )
+echo [%TIME%] it is gone>>"%LOG%"
 
 if exist "%OLD%\\natvox.exe" rmdir /s /q "%OLD%"
 if exist "%OLD%" (
-  echo cannot clear "%OLD%"; leaving everything as it is
+  echo [%TIME%] cannot clear "%OLD%" -- leaving everything as it is>>"%LOG%"
   exit /b 1
 )
 if not exist "%STAGED%\\natvox.exe" (
-  echo "%STAGED%" is not a natvox build; leaving everything as it is
+  echo [%TIME%] "%STAGED%" is not a natvox build -- leaving everything as it is>>"%LOG%"
   exit /b 1
 )
 
 :aside
-move "%INSTALL%" "%OLD%" >nul 2>&1
+move "%INSTALL%" "%OLD%" >>"%LOG%" 2>&1
 if not exist "%OLD%\\natvox.exe" (
   set /a LEFT-=1
   if %LEFT% GTR 0 (
     ping -n 2 127.0.0.1 >nul
     goto aside
   )
-  echo could not move "%INSTALL%" aside; leaving everything as it is
+  echo [%TIME%] could not move "%INSTALL%" aside -- leaving everything as it is>>"%LOG%"
   exit /b 1
 )
+echo [%TIME%] moved aside>>"%LOG%"
 
 if exist "%INSTALL%" rmdir /q "%INSTALL%" 2>nul
 if exist "%INSTALL%" goto rollback
-move "%STAGED%" "%INSTALL%" >nul 2>&1
+move "%STAGED%" "%INSTALL%" >>"%LOG%" 2>&1
 if not exist "%INSTALL%\\natvox.exe" goto rollback
 
+echo [%TIME%] installed>>"%LOG%"
 rmdir /s /q "%OLD%"
 @RELAUNCH@
 (goto) 2>nul & rmdir /s /q "%~dp0"
 exit /b 0
 
 :rollback
+echo [%TIME%] putting the old copy back>>"%LOG%"
 if exist "%INSTALL%" rmdir /s /q "%INSTALL%"
-move "%OLD%" "%INSTALL%" >nul 2>&1
+move "%OLD%" "%INSTALL%" >>"%LOG%" 2>&1
 if exist "%INSTALL%\\natvox.exe" (
-  echo the update failed and the old copy is back
+  echo [%TIME%] the update failed and the old copy is back>>"%LOG%"
   exit /b 1
 )
-echo THE UPDATE FAILED AND SO DID PUTTING IT BACK.
-echo Your program is in "%OLD%" -- rename that to "%INSTALL%".
+echo [%TIME%] THE UPDATE FAILED AND SO DID PUTTING IT BACK.>>"%LOG%"
+echo Your program is in "%OLD%" -- rename that to "%INSTALL%".>>"%LOG%"
 exit /b 2
 """
 
 _POSIX_SWAP = """#!/bin/sh
-PID="$1"; INSTALL="$2"; STAGED="$3"; OLD="$2.old"
-LEFT="$4"
+PID="$1"; INSTALL="$2"; STAGED="$3"; LEFT="$4"
+OLD="$2.old"; LOG="$2.update.log"
+say() { echo "$@" >>"$LOG"; }
+
+: >"$LOG"
+say "waiting for pid $PID"
+say "  install $INSTALL"
+say "  staged  $STAGED"
 while kill -0 "$PID" 2>/dev/null; do sleep 1; done
+say "it is gone"
 
 if [ -e "$OLD/natvox" ]; then rm -rf "$OLD"; fi
 if [ -e "$OLD" ]; then
-  echo "cannot clear $OLD; leaving everything as it is" >&2
+  say "cannot clear $OLD -- leaving everything as it is"
   exit 1
 fi
 if [ ! -e "$STAGED/natvox" ]; then
-  echo "$STAGED is not a natvox build; leaving everything as it is" >&2
+  say "$STAGED is not a natvox build -- leaving everything as it is"
   exit 1
 fi
 
 while [ ! -e "$OLD/natvox" ]; do
-  mv "$INSTALL" "$OLD" 2>/dev/null
+  mv "$INSTALL" "$OLD" 2>>"$LOG"
   if [ -e "$OLD/natvox" ]; then break; fi
   LEFT=$((LEFT - 1))
   if [ "$LEFT" -le 0 ]; then
-    echo "could not move $INSTALL aside; leaving everything as it is" >&2
+    say "could not move $INSTALL aside -- leaving everything as it is"
     exit 1
   fi
   sleep 1
 done
+say "moved aside"
 
 rmdir "$INSTALL" 2>/dev/null
 ok=1
 if [ -e "$INSTALL" ]; then ok=0; fi
-if [ "$ok" = 1 ]; then mv "$STAGED" "$INSTALL" 2>/dev/null || ok=0; fi
+if [ "$ok" = 1 ]; then mv "$STAGED" "$INSTALL" 2>>"$LOG" || ok=0; fi
 if [ ! -e "$INSTALL/natvox" ]; then ok=0; fi
 if [ "$ok" = 0 ]; then
+  say "putting the old copy back"
   rm -rf "$INSTALL"
-  if mv "$OLD" "$INSTALL" 2>/dev/null && [ -e "$INSTALL/natvox" ]; then
-    echo "the update failed and the old copy is back" >&2
+  if mv "$OLD" "$INSTALL" 2>>"$LOG" && [ -e "$INSTALL/natvox" ]; then
+    say "the update failed and the old copy is back"
     exit 1
   fi
-  echo "THE UPDATE FAILED AND SO DID PUTTING IT BACK." >&2
-  echo "Your program is in $OLD -- rename that to $INSTALL." >&2
+  say "THE UPDATE FAILED AND SO DID PUTTING IT BACK."
+  say "Your program is in $OLD -- rename that to $INSTALL."
   exit 2
 fi
 
+say "installed"
 rm -rf "$OLD"
 @RELAUNCH@
 rm -rf "$(dirname "$0")"

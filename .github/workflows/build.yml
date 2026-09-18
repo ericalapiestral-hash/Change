@@ -142,6 +142,15 @@ jobs:
             Start-Sleep -Seconds 5
             $staged = Test-Path "dist\.natvox-staged"
           } while ($staged -and (Get-Date) -lt $deadline)
+          # The script runs detached with no console, so its log beside the
+          # install is the only account of what it did.
+          if (Test-Path "dist\selftest.update.log") {
+            Write-Host "--- the swap script's log ---"
+            Get-Content "dist\selftest.update.log" | Write-Host
+          } else {
+            Write-Host "--- the swap script left no log at all ---"
+            Get-ChildItem dist | Select-Object Name | Write-Host
+          }
           if ($staged) {
             $ErrorActionPreference = "Stop"
             throw "the swap never happened: dist\.natvox-staged is still there"
@@ -157,6 +166,7 @@ jobs:
             throw "after installing, the copy should BE the published build: $after"
           }
           Remove-Item -Recurse -Force dist\selftest -ErrorAction SilentlyContinue
+          Remove-Item -Force dist\selftest.update.log -ErrorAction SilentlyContinue
           $global:LASTEXITCODE = 0
 
       - name: Package
