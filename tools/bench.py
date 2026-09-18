@@ -65,6 +65,14 @@ def voice_cues(profile, dry_utt, voiced, unvoiced, wet_utt) -> dict:
     return cues
 
 
+def unvoiced_mask(dry_utt, voiced, margin_ms: float) -> np.ndarray:
+    """Audible audio at least ``margin_ms`` away from anything the truth calls voiced."""
+    margin = int(margin_ms / 1000.0 * SR)
+    away = np.convolve(voiced.astype(float), np.ones(2 * margin + 1), mode="same") == 0
+    loud = np.convolve(np.abs(dry_utt), np.ones(512) / 512, mode="same") > 5e-3
+    return away & loud
+
+
 #: Highest frequency in the overdrive test signal.  Anything above it in the
 #: output was made by the engine.
 BAND_EDGE_HZ = 5000.0
@@ -91,11 +99,14 @@ def run(name: str, profile, dry_utt, truth, dry_sus, f0_sus, boundary) -> dict:
     # Erode the unvoiced mask: near a boundary the engine is legitimately
     # still in voiced mode, so including those samples would measure the
     # transition rather than the consonant.
-    margin = int(0.03 * SR)
-    kernel = np.ones(2 * margin + 1)
-    eroded = np.convolve(voiced.astype(float), kernel, mode="same") == 0
-    loud = np.convolve(np.abs(dry_utt), np.ones(512) / 512, mode="same") > 5e-3
-    unvoiced = eroded & loud
+    unvoiced = unvoiced_mask(dry_utt, voiced, 30.0)
+    # The aspiration columns erode further.  The ground truth switches voicing
+    # off while a vowel is still sounding, and the engine goes on treating that
+    # decaying tail as voiced -- correctly, since it still has a pitch.  At
+    # 30 ms one such tail dominated the measurement and made a preset look like
+    # it was putting -41 dB of breath on consonants; at 45 ms and beyond every
+    # preset reads -97 dB, which is the real answer.
+    quiet_air = unvoiced_mask(dry_utt, voiced, 50.0)
     guard = slice(int(0.05 * SR), -int(0.05 * SR))
 
     (onsets, onset_truth, creak, creak_truth, human, human_region, human_jitter,
@@ -124,7 +135,7 @@ def run(name: str, profile, dry_utt, truth, dry_sus, f0_sus, boundary) -> dict:
 
     return {
         "preset": name,
-        **voice_cues(profile, dry_utt, voiced, unvoiced, wet_utt),
+        **voice_cues(profile, dry_utt, voiced, quiet_air, wet_utt),
         "onset_ms": onset_mean,
         "creak_pct": 100.0 * creak_share,
         "creak_flips": creak_flips,

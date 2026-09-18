@@ -152,19 +152,26 @@ class TestTilt:
 
 
 class TestAspiration:
-    def test_it_lands_on_voiced_audio_and_nowhere_else(self, utterance, sample_rate):
+    @pytest.mark.parametrize("name", ["female", "female_soft", "female_bright"])
+    def test_it_lands_on_voiced_audio_and_nowhere_else(self, utterance, sample_rate, name):
         audio, truth = utterance
-        dry_air = process(audio, sample_rate, FEMALE.replace(breathiness=0.0))
-        breathy = process(audio, sample_rate, FEMALE)
+        profile = presets.get(name)
+        dry_air = process(audio, sample_rate, profile.replace(breathiness=0.0))
+        breathy = process(audio, sample_rate, profile)
         voiced = truth["voiced"]
-        margin = int(0.03 * sample_rate)
+        # 50 ms, not 30: the ground truth stops calling a vowel voiced while it
+        # is still sounding, and the engine goes on treating that decaying tail
+        # as voiced -- correctly, since it still has a pitch.  A 30 ms margin
+        # includes one such tail and reports the breath on it as breath on a
+        # consonant, at -41 dB instead of the real -97.
+        margin = int(0.05 * sample_rate)
         away = np.convolve(voiced.astype(float), np.ones(2 * margin + 1),
                            mode="same") == 0
         loud = np.convolve(np.abs(audio), np.ones(512) / 512, mode="same") > 5e-3
         on_voiced = added_energy_db(dry_air, breathy, voiced)
         on_unvoiced = added_energy_db(dry_air, breathy, away & loud)
         assert on_voiced > -45.0
-        assert on_unvoiced < on_voiced - 40.0, (on_voiced, on_unvoiced)
+        assert on_unvoiced < on_voiced - 55.0, (on_voiced, on_unvoiced)
 
     def test_it_leaves_untouched_consonants_untouched(self, fricative_noise, sample_rate):
         """Consonant passthrough is bit-exact; breath must not spoil that."""
