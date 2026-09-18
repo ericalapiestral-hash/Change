@@ -135,6 +135,11 @@ class Window(QtWidgets.QWidget):
         self._sliders: dict[str, QtWidgets.QSlider] = {}
         self._readouts: dict[str, QtWidgets.QLabel] = {}
         self._loading = False
+        #: Bytes done and total for a download in progress.  Written by the
+        #: worker thread and read by the refresh timer, as the meters are: a
+        #: torn read is one frame stale and a lock would be worse.
+        self._download = (0, 0)
+        self._staged = None
         self._worker = Worker()
         self._worker.done.connect(self._worker_done)
         self._worker.failed.connect(self.report)
@@ -249,6 +254,11 @@ class Window(QtWidgets.QWidget):
         self.save.clicked.connect(self.save_capture)
         self.check = QtWidgets.QPushButton("Will this computer keep up?")
         self.check.clicked.connect(self.run_self_test)
+        self.update_button = QtWidgets.QPushButton("Check for an update")
+        self.update_button.setToolTip(
+            "Downloads it and checks its checksum. It installs when you "
+            "close the program, never before.")
+        self.update_button.clicked.connect(self.check_for_update)
         self.ladder = QtWidgets.QPushButton("Save a pitch ladder")
         self.ladder.setToolTip(
             "The same thing you just said, at six pitches. Play them in order "
@@ -260,7 +270,7 @@ class Window(QtWidgets.QWidget):
             "out the shift it needs. The presets guess.")
         self.tune.clicked.connect(self.tune_to_voice)
         for button in (self.power, self.ab, self.save, self.check,
-                       self.tune, self.ladder):
+                       self.tune, self.ladder, self.update_button):
             row.addWidget(button)
         return box
 
@@ -445,6 +455,10 @@ class Window(QtWidgets.QWidget):
 
     # -- feedback ----------------------------------------------------------
     def refresh(self) -> None:
+        done, total = self._download
+        if total and done < total:
+            self.status.setText(f"downloading... {done / 1048576:.0f} of "
+                                f"{total / 1048576:.0f} MB")
         metrics = self.studio.metrics()
         self.meter_in.set_level(metrics.input_peak)
         self.meter_out.set_level(metrics.output_peak)
@@ -468,6 +482,12 @@ class Window(QtWidgets.QWidget):
         self.status.setText(message)
 
     def _worker_done(self, result) -> None:
+        from .update import UpdateState
+
+        if isinstance(result, UpdateState) and result.available:
+            self.report(result.summary())
+            self._offer_update(result)
+            return
         self.report(result.summary() if hasattr(result, "summary") else str(result))
 
     def run_self_test(self) -> None:
@@ -509,6 +529,58 @@ class Window(QtWidgets.QWidget):
         self._show_profile()
         self.report(suggestion.summary())
 
+    def check_for_update(self) -> None:
+        """Ask, then offer.  It never installs without being clicked.
+
+        This program is not code-signed -- Windows says so the first time it
+        runs -- and something unsigned that also replaces itself unasked is not
+        a thing to put in front of somebody.
+        """
+        self.report("checking...")
+        self._worker.run(self._check_update)
+
+    def _check_update(self):
+        from . import update
+
+        state = update.state()
+        if not state.available:
+            return state.summary()
+        return state
+
+    def _offer_update(self, state) -> None:
+        from . import update
+
+        answer = QtWidgets.QMessageBox.question(
+            self, "Update", state.summary()
+            + "\n\nDownload it now? It installs when you close the program.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+        if answer != QtWidgets.QMessageBox.Yes:
+            self.report("left as it is")
+            return
+        self.report("downloading...")
+        self._worker.run(lambda: self._fetch_update(state.release))
+
+    def _fetch_update(self, release):
+        from . import update
+
+        try:
+            archive = update.download(
+                release,
+                progress=lambda done, total: setattr(
+                    self, "_download", (done, total)))
+            install = update.install_dir()
+            if install is None:
+                return (f"downloaded and checked, but this is a checkout "
+                        f"rather than a downloaded build -- use git. "
+                        f"({archive})")
+            self._staged = update.stage(archive, install)
+            return (f"{release.short} is downloaded and its checksum checks "
+                    "out. Close the program and it installs itself.")
+        except update.UpdateError as exc:
+            return str(exc)
+        finally:
+            self._download = (0, 0)
+
     def save_ladder(self) -> None:
         """Six renderings of the same sentence, to be chosen between by ear.
 
@@ -549,6 +621,12 @@ class Window(QtWidgets.QWidget):
 
     def closeEvent(self, event) -> None:        # noqa: N802 - Qt naming
         self.stop()
+        if self._staged is not None:
+            from . import update
+            try:
+                update.apply(self._staged, relaunch=True)
+            except update.UpdateError as exc:
+                print(f"the update did not install: {exc}", file=sys.stderr)
         try:
             self.studio.settings.save(self.studio.settings_file)
         except OSError as exc:

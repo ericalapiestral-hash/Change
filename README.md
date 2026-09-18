@@ -600,6 +600,39 @@ component that can take the whole machine down — for a saving this repository
 has no measurement of yet. Nothing here is built to that standard on a guess,
 which is what `--loopback` is for.
 
+### Updating itself
+
+```bash
+natvox-cli.exe --update              # is there a newer build?
+natvox-cli.exe --update --install    # fetch it, check it, swap it in on exit
+```
+
+or **Check for an update** in the window, which offers and waits for a click.
+
+Three rules, each of which costs something:
+
+**It never applies an update on its own.** This build is not code-signed —
+Windows says so the first time you run it — and something unsigned that also
+replaces itself unasked is not a thing to ship. Checking and telling are
+automatic; applying is not.
+
+**It verifies the download before doing anything with it.** GitHub publishes a
+SHA-256 for every release asset; the bytes are hashed as they arrive and a
+mismatch deletes the file. An asset with *no* published digest is also refused,
+rather than installed unverified.
+
+**It cannot overwrite a running program, so it does not try.** The new copy is
+unpacked beside the old one and a small script waits for the process to exit,
+renames the old directory aside, renames the new one into place, and puts the
+old one back if that fails. A crash halfway leaves a program that starts.
+
+Two details worth knowing. The comparison is on the **commit**, not the
+version: every build so far has been `0.3.0`, so a version comparison would
+offer nothing ever — the commit is written into the bundle by the release
+workflow and read back from `natvox/_build.py`. And because this repository is
+private, GitHub answers an unauthenticated request with **404 rather than 403**;
+put a read-scoped token in `NATVOX_GITHUB_TOKEN` and the message says so.
+
 ## Server
 
 ```bash
@@ -656,7 +689,7 @@ reconstructs to −322 dB. It has **not** been run against a real checkpoint.
 
 ```bash
 pip install -e '.[dev]'
-pytest                      # 630 tests
+pytest                      # 673 tests
 python tools/bench.py       # artifact measurements
 
 cd web && npm install && npm test     # 127 more, including the live path

@@ -186,6 +186,56 @@ class TestTheBundledEntryPoint:
         assert "female_soft" in capsys.readouterr().out
 
 
+class TestUpdate:
+    def test_it_reports_and_does_not_install_without_being_asked(
+            self, capsys, monkeypatch):
+        from natvox.app import update
+
+        release = update.Release("desktop-build", "c" * 40, "n.zip",
+                                 "https://x/n.zip", 1000, "sha256:" + "d" * 64,
+                                 "2026-09-18T00:00:00Z")
+        monkeypatch.setattr(update, "state",
+                            lambda **k: update.UpdateState("abc1234", release))
+        downloaded = []
+        monkeypatch.setattr(update, "download", lambda *a, **k: downloaded.append(a))
+        assert main(["app", "--update"]) == 0
+        out = capsys.readouterr().out
+        assert "an update is available" in out
+        assert "--install" in out
+        assert not downloaded, "an unsigned program does not replace itself unasked"
+
+    def test_being_up_to_date_is_a_success(self, capsys, monkeypatch):
+        from natvox.app import update
+
+        monkeypatch.setattr(update, "state",
+                            lambda **k: update.UpdateState("abc1234"))
+        assert main(["app", "--update"]) == 0
+        assert "no release found" in capsys.readouterr().out
+
+    def test_a_failure_is_a_failure(self, capsys, monkeypatch):
+        from natvox.app import update
+
+        monkeypatch.setattr(
+            update, "state",
+            lambda **k: update.UpdateState("abc1234", error="could not reach GitHub"))
+        assert main(["app", "--update"]) == 1
+        assert "could not reach" in capsys.readouterr().out
+
+    def test_installing_from_a_checkout_says_use_git(self, capsys, monkeypatch,
+                                                     tmp_path):
+        from natvox.app import update
+
+        release = update.Release("desktop-build", "c" * 40, "n.zip",
+                                 "https://x/n.zip", 1000, "sha256:" + "d" * 64,
+                                 "2026-09-18T00:00:00Z")
+        monkeypatch.setattr(update, "state",
+                            lambda **k: update.UpdateState("abc1234", release))
+        monkeypatch.setattr(update, "download", lambda *a, **k: tmp_path / "n.zip")
+        monkeypatch.setattr(update, "install_dir", lambda: None)
+        assert main(["app", "--update", "--install"]) == 0
+        assert "use git" in capsys.readouterr().out
+
+
 class TestTune:
     def test_it_says_what_to_install_when_there_is_no_microphone(self, capsys):
         assert main(["app", "--tune", "--seconds", "0.2"]) == 1

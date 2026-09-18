@@ -364,6 +364,49 @@ class TestAnswers:
         assert "150Hz" in written[0].name
         assert "pick the first" in window.status.text()
 
+    def test_being_up_to_date_just_says_so(self, window, monkeypatch):
+        from natvox.app import update
+
+        monkeypatch.setattr(update, "state",
+                            lambda **k: update.UpdateState("abc1234"))
+        window.check_for_update()
+        assert wait_for(lambda: "checking" not in window.status.text(), 20.0)
+        assert "no release found" in window.status.text()
+
+    def test_an_update_is_offered_and_not_taken_without_asking(
+            self, window, monkeypatch):
+        """Unsigned, and therefore never installed unasked."""
+        from natvox.app import update
+
+        release = update.Release("desktop-build", "c" * 40, "n.zip",
+                                 "https://x/n.zip", 1000, "sha256:" + "d" * 64,
+                                 "2026-09-18T00:00:00Z")
+        monkeypatch.setattr(update, "state",
+                            lambda **k: update.UpdateState("abc1234", release))
+        asked = []
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox, "question",
+            staticmethod(lambda *a, **k: asked.append(a) or QtWidgets.QMessageBox.No))
+        downloaded = []
+        monkeypatch.setattr(update, "download",
+                            lambda *a, **k: downloaded.append(a))
+        window.check_for_update()
+        assert wait_for(lambda: bool(asked), 20.0)
+        pump(0.2)
+        assert not downloaded, "No means no"
+        assert window._staged is None
+        assert "left as it is" in window.status.text()
+
+    def test_closing_with_nothing_staged_installs_nothing(self, window,
+                                                          monkeypatch):
+        from natvox.app import update
+
+        applied = []
+        monkeypatch.setattr(update, "apply",
+                            lambda *a, **k: applied.append(a))
+        window.close()
+        assert not applied
+
     def test_saving_before_anything_was_said_explains_itself(self, window):
         window.save_capture()
         assert "Nothing recorded" in window.status.text()

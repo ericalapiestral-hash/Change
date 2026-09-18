@@ -305,6 +305,53 @@ def cmd_tune(args) -> int:
     return 0
 
 
+def cmd_update(args) -> int:
+    """Check for a newer build, and install it if asked.
+
+    Never installs without being asked.  This program is not code-signed --
+    Windows says so the first time it runs -- and something unsigned that also
+    replaces itself unasked is not a thing to ship.
+    """
+    from .app import update
+
+    state = update.state()
+    print(state.summary())
+    if state.error:
+        return 1
+    if not state.available:
+        return 0
+    if not args.install:
+        print("\nrun it again with --install to download and apply it")
+        return 0
+
+    release = state.release
+    last = [-1]
+
+    def progress(done, total):
+        percent = int(100 * done / total) if total else 0
+        if percent >= last[0] + 10:
+            last[0] = percent
+            print(f"  {percent:3d}%  {done / 1048576:.0f} of "
+                  f"{total / 1048576:.0f} MB", file=sys.stderr)
+
+    try:
+        archive = update.download(release, progress=progress)
+        install = update.install_dir()
+        if install is None:
+            print(f"\ndownloaded and checked: {archive}")
+            print("this is a checkout rather than a downloaded build, so "
+                  "nothing was replaced -- use git")
+            return 0
+        staged = update.stage(archive, install)
+        update.apply(staged, install, relaunch=False)
+    except update.UpdateError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(f"\n{release.short} is staged. It installs as this program exits, "
+          "which is now.")
+    return 0
+
+
 def cmd_ladder(args) -> int:
     """Record once, render it at a spread of pitches, and let the ear decide.
 
@@ -370,6 +417,8 @@ def cmd_app(args) -> int:
         return print_devices()
     if args.loopback:
         return cmd_loopback(args)
+    if args.update:
+        return cmd_update(args)
     if args.ladder:
         return cmd_ladder(args)
     if args.tune:
@@ -454,6 +503,11 @@ def build_parser() -> argparse.ArgumentParser:
                      help="measure your own voice and work out the shift it "
                           "needs; the presets are a guess about a speaker "
                           "nobody has heard")
+    app.add_argument("--update", action="store_true",
+                     help="check whether a newer build has been published")
+    app.add_argument("--install", action="store_true",
+                     help="with --update, download it (checksum-verified) and "
+                          "install it as this program exits")
     app.add_argument("--ladder", action="store_true",
                      help="record once, render it at six pitches, and let your "
                           "ear pick; 'which sounds like a woman' is a question "

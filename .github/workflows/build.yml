@@ -40,6 +40,19 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: pytest -q
 
+      # Every build is version 0.3.0, so the version cannot tell one from
+      # another and an updater comparing versions would never offer anything.
+      # The commit is what differs, so the commit goes in the bundle.
+      - name: Stamp the build
+        shell: pwsh
+        run: |
+          $stamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+          $text = (Get-Content natvox/_build.py -Raw)
+          $text = $text -replace 'COMMIT = ""', ('COMMIT = "' + $env:GITHUB_SHA + '"')
+          $text = $text -replace 'BUILT = ""', ('BUILT = "' + $stamp + '"')
+          Set-Content -Path natvox/_build.py -Value $text -Encoding utf8 -NoNewline
+          python -c "from natvox._build import installed, BUILT; print('stamped', installed(), BUILT)"
+
       - name: Build
         working-directory: packaging
         run: pyinstaller --clean --noconfirm --log-level WARN natvox.spec
@@ -63,7 +76,7 @@ jobs:
           # exit 1, and the step wrapper turns a non-zero $LASTEXITCODE into a
           # failed step whatever the script decided.
           $ErrorActionPreference = "Continue"
-          foreach ($flag in @("--devices", "--loopback")) {
+          foreach ($flag in @("--devices", "--loopback", "--update")) {
             $out = (.\dist\natvox\natvox-cli.exe $flag --attempts 1 2>&1 | Out-String)
             Write-Host "--- natvox-cli $flag ---"
             Write-Host $out
@@ -113,6 +126,12 @@ jobs:
             "this machine can keep up; ``natvox-cli.exe --devices`` lists the audio",
             "devices best host API first (Windows offers the same microphone once per",
             "API, and the copy it offers first is the slowest one); and",
+            "``natvox-cli.exe --update`` checks whether a newer build has been",
+            "published and ``--update --install`` fetches it, verifies its SHA-256 and",
+            "swaps it in as the program exits. The window has a button for it. It never",
+            "installs without being asked: this build is not code-signed, and something",
+            "unsigned that also replaces itself unasked is not a thing to ship.",
+            "",
             "``natvox-cli.exe --loopback`` times a sweep out of the output device and",
             "back in through the input, which is the only way to find out what the",
             "mixer and a virtual cable really cost. ``natvox-cli.exe --probe ws://...``",

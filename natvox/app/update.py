@@ -1,0 +1,453 @@
+"""Replacing this copy with a newer one, without downloading it by hand.
+
+Three rules shape everything here, and they are worth stating because each one
+costs something and each one is deliberate.
+
+**It never applies an update on its own.**  This program is not code-signed --
+Windows already says so when you first run it -- and a thing that is not signed
+and also silently replaces itself is a thing nobody should be asked to trust.
+So the check is automatic, the telling is automatic, and the applying happens
+when somebody clicks.
+
+**It verifies what it downloaded before it does anything with it.**  GitHub
+publishes a SHA-256 for every release asset; the download is hashed as it
+arrives and a mismatch is a hard failure, not a warning.  An asset with no
+digest published is also a hard failure rather than an unverified install: if
+GitHub ever stops publishing them, that should surface as an error message and
+not as this module quietly lowering its standards.
+
+**It cannot overwrite a running program, so it does not try.**  On Windows the
+executable and every DLL beside it are locked while the process lives.  The new
+copy is unpacked next to the old one and a small script waits for this process
+to exit before swapping the two directories -- which also means a failure
+halfway through leaves the old copy in place and working, rather than a
+half-written install that starts neither.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
+import zipfile
+from dataclasses import dataclass
+from pathlib import Path
+
+from .. import __version__
+from .._build import COMMIT, is_frozen_build
+
+#: Where releases come from.  Hard-coded rather than configurable: a setting
+#: that points an auto-updater at a different server is a setting that turns a
+#: config file into remote code execution.
+REPO = "ericalapiestral-hash/Change"
+TAG = "desktop-build"
+API_HOST = "api.github.com"
+
+#: Refused above this, so a wrong URL cannot fill the disk.  The bundle is
+#: about 93 MB.
+MAX_ASSET_BYTES = 400 * 1024 * 1024
+
+#: Where a token is read from, when the repository is private.
+#:
+#: Read, never written: this module does not store credentials, so there is
+#: nothing here to leak into a settings file or a log.  A public repository
+#: needs none of it.
+TOKEN_ENV = "NATVOX_GITHUB_TOKEN"
+
+#: Name of the directory the new copy is unpacked into, beside the old one.
+STAGING = ".natvox-staged"
+
+CONNECT_TIMEOUT = 20.0
+
+#: Waits for the process to go, renames the install aside, renames the staged
+#: copy into place, and puts the old one back if the second rename fails.  The
+#: last line deletes the script itself, which is legal for a batch file only
+#: after `(goto) 2>nul` closes the interpreter's handle on it.
+_WINDOWS_SWAP = """@echo off
+setlocal
+set "PID=%~1"
+set "INSTALL=%~2"
+set "STAGED=%~3"
+set "OLD=%INSTALL%.old"
+:wait
+tasklist /FI "PID eq %PID%" 2>nul | find "%PID%" >nul
+if not errorlevel 1 (
+  ping -n 2 127.0.0.1 >nul
+  goto wait
+)
+if exist "%OLD%" rmdir /s /q "%OLD%"
+move "%INSTALL%" "%OLD%" >nul
+if errorlevel 1 exit /b 1
+move "%STAGED%" "%INSTALL%" >nul
+if errorlevel 1 (
+  move "%OLD%" "%INSTALL%" >nul
+  exit /b 1
+)
+if exist "%OLD%" rmdir /s /q "%OLD%"
+@RELAUNCH@
+(goto) 2>nul & rmdir /s /q "%~dp0"
+"""
+
+_POSIX_SWAP = """#!/bin/sh
+PID="$1"; INSTALL="$2"; STAGED="$3"; OLD="$2.old"
+while kill -0 "$PID" 2>/dev/null; do sleep 1; done
+rm -rf "$OLD"
+mv "$INSTALL" "$OLD" || exit 1
+mv "$STAGED" "$INSTALL" || { mv "$OLD" "$INSTALL"; exit 1; }
+rm -rf "$OLD"
+@RELAUNCH@
+rm -rf "$(dirname "$0")"
+"""
+
+
+
+class UpdateError(RuntimeError):
+    """Something went wrong, with a sentence explaining what."""
+
+
+@dataclass
+class Release:
+    """A published build, as the update check found it."""
+
+    tag: str
+    commit: str
+    asset: str
+    url: str
+    size: int
+    #: ``sha256:<hex>`` as GitHub publishes it.
+    digest: str
+    published: str
+    notes: str = ""
+
+    @property
+    def short(self) -> str:
+        return self.commit[:7] if self.commit else self.tag
+
+    @property
+    def megabytes(self) -> float:
+        return self.size / (1024 * 1024)
+
+    def summary(self) -> str:
+        return (f"{self.short} published {self.published[:10]} "
+                f"({self.megabytes:.0f} MB)")
+
+
+class _DropAuthOnRedirect(urllib.request.HTTPRedirectHandler):
+    """Do not carry the token to wherever GitHub sends us next.
+
+    An asset download redirects to a signed object store on another host.
+    urllib re-sends headers added to the Request across that hop, which both
+    hands the credential to a third party and breaks the download -- the object
+    store rejects a request carrying an Authorization header it did not ask
+    for, so this is a correctness fix as much as a careful one.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not newurl.lower().startswith("https://"):
+            raise UpdateError("refusing a redirect away from HTTPS")
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and _host(newurl) != _host(req.full_url):
+            new.remove_header("Authorization")
+        return new
+
+
+def _host(url: str) -> str:
+    return urllib.parse.urlsplit(url).netloc.lower()
+
+
+def _opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(_DropAuthOnRedirect())
+
+
+def _request(url: str, token: str | None):
+    if not url.startswith("https://"):
+        raise UpdateError(f"refusing to fetch over plain HTTP: {url}")
+    request = urllib.request.Request(url, headers={
+        "Accept": "application/vnd.github+json",
+        "User-Agent": f"natvox/{__version__}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    })
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
+    return request
+
+
+def token_from_environment() -> str | None:
+    value = os.environ.get(TOKEN_ENV, "").strip()
+    return value or None
+
+
+def check(repo: str = REPO, tag: str = TAG, token: str | None = None,
+          timeout: float = CONNECT_TIMEOUT) -> Release:
+    """Ask GitHub what the published build is.
+
+    Raises rather than returning None, because every failure here has a
+    different remedy -- no network, a private repository with no token, a
+    release that has no zip attached -- and a bare None would lose which.
+    """
+    token = token or token_from_environment()
+    url = f"https://{API_HOST}/repos/{repo}/releases/tags/{tag}"
+    try:
+        with _opener().open(_request(url, token), timeout=timeout) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            raise UpdateError(
+                "GitHub refused the request. If the repository is private, put "
+                f"a token with read access in the {TOKEN_ENV} environment "
+                "variable.") from exc
+        if exc.code == 404:
+            raise UpdateError(
+                f"no release tagged {tag!r} in {repo} -- or the repository is "
+                f"private and no token was given. GitHub reports both as 404, "
+                f"so if you know the release exists, set {TOKEN_ENV}.") from exc
+        raise UpdateError(f"GitHub returned {exc.code}: {exc.reason}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise UpdateError(f"could not reach GitHub: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise UpdateError("GitHub sent something that is not JSON") from exc
+
+    assets = [a for a in payload.get("assets", [])
+              if str(a.get("name", "")).endswith(".zip")]
+    if not assets:
+        raise UpdateError(f"the {tag!r} release has no .zip attached to it")
+    asset = assets[0]
+    digest = str(asset.get("digest") or "")
+    if not digest.startswith("sha256:"):
+        raise UpdateError(
+            "GitHub published no SHA-256 for that download. Refusing rather "
+            "than installing something unverified; download it by hand if you "
+            "are sure.")
+    size = int(asset.get("size") or 0)
+    if size <= 0 or size > MAX_ASSET_BYTES:
+        raise UpdateError(f"that download is {size} bytes, which is not a build")
+
+    return Release(
+        tag=str(payload.get("tag_name") or tag),
+        commit=str(payload.get("target_commitish") or ""),
+        asset=str(asset["name"]),
+        url=str(asset["browser_download_url"]),
+        size=size,
+        digest=digest,
+        published=str(payload.get("published_at") or ""),
+        notes=str(payload.get("body") or ""),
+    )
+
+
+def is_newer(release: Release) -> bool:
+    """Whether ``release`` is a different build from this one.
+
+    Different, not greater.  These builds are all version 0.3.0 and the tag is
+    recreated in place, so there is no ordering to compare -- only identity.
+    That also makes rolling back work, which a strict greater-than would not.
+    """
+    return bool(release.commit) and release.commit != COMMIT
+
+
+def install_dir() -> Path | None:
+    """Where the frozen program lives, or None when running from a checkout."""
+    if not is_frozen_build() or not getattr(sys, "frozen", False):
+        return None
+    return Path(sys.executable).resolve().parent
+
+
+def download(release: Release, into: Path | None = None,
+             token: str | None = None, progress=None,
+             timeout: float = CONNECT_TIMEOUT) -> Path:
+    """Fetch the asset and verify its digest.  Returns the file.
+
+    The hash is computed while the bytes arrive rather than afterwards, so a
+    file that fails never existed in a complete state on disk.
+    """
+    token = token or token_from_environment()
+    folder = Path(into) if into else Path(tempfile.mkdtemp(prefix="natvox-update-"))
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / release.asset
+    wanted = release.digest.split(":", 1)[1].lower()
+
+    digest = hashlib.sha256()
+    written = 0
+    try:
+        with _opener().open(_request(release.url, token),
+                            timeout=timeout) as response:
+            with open(target, "wb") as handle:
+                while True:
+                    chunk = response.read(1 << 16)
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    if written > MAX_ASSET_BYTES:
+                        raise UpdateError("the download kept going past the "
+                                          "size GitHub said it was")
+                    digest.update(chunk)
+                    handle.write(chunk)
+                    if progress:
+                        progress(written, release.size)
+    except UpdateError:
+        target.unlink(missing_ok=True)
+        raise
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        target.unlink(missing_ok=True)
+        raise UpdateError(f"the download failed: {exc}") from exc
+
+    if written != release.size:
+        target.unlink(missing_ok=True)
+        raise UpdateError(f"got {written} bytes where GitHub said {release.size}")
+    if digest.hexdigest().lower() != wanted:
+        target.unlink(missing_ok=True)
+        raise UpdateError(
+            "the download does not match the checksum GitHub published. "
+            "Nothing has been installed.")
+    return target
+
+
+def stage(archive: Path, beside: Path) -> Path:
+    """Unpack ``archive`` into a staging directory next to the install.
+
+    Next to it rather than inside it, so that the swap later is a directory
+    rename and not a file-by-file copy that can be interrupted halfway.
+    """
+    archive, beside = Path(archive), Path(beside)
+    staged = beside.parent / STAGING
+    if staged.exists():
+        shutil.rmtree(staged, ignore_errors=True)
+    staged.mkdir(parents=True)
+    root = staged.resolve()
+    done = False
+    try:
+        with zipfile.ZipFile(archive) as bundle:
+            for entry in bundle.namelist():
+                # A zip can name ../ or an absolute path.  Compared as paths
+                # and not as strings: "/tmp/natvox-staged-evil" starts with
+                # "/tmp/natvox-staged" and is not inside it.
+                resolved = (staged / entry).resolve()
+                if resolved != root and root not in resolved.parents:
+                    raise UpdateError(f"the archive tries to write outside "
+                                      f"itself: {entry!r}")
+            bundle.extractall(staged)
+        done = True
+    except (zipfile.BadZipFile, OSError) as exc:
+        raise UpdateError(f"the download is not a usable zip: {exc}") from exc
+    finally:
+        # Any failure at all, not just a bad zip: a refusal that leaves half an
+        # archive behind would be installed by the next attempt.
+        if not done:
+            shutil.rmtree(staged, ignore_errors=True)
+
+    launcher = "natvox.exe" if os.name == "nt" else "natvox"
+    if not (staged / launcher).exists():
+        shutil.rmtree(staged, ignore_errors=True)
+        raise UpdateError(f"the archive has no {launcher} in it")
+    return staged
+
+
+
+def _swap_script(relaunch: bool) -> tuple[Path, list[str]]:
+    """The script that does the swap once this process is gone.
+
+    The paths are passed to it as arguments rather than written into its body.
+    Interpolating a Windows path into a batch file is a quoting problem with no
+    good answer -- ``&``, ``^``, ``%`` and ``!`` are all legal in a user profile
+    name and all mean something to cmd.exe -- and an updater that mangles a path
+    deletes the wrong directory.  As arguments they are the shell's problem, and
+    the shell is good at it.
+    """
+    if os.name == "nt":
+        body = _WINDOWS_SWAP.replace(
+            "@RELAUNCH@", 'start "" "%INSTALL%\\natvox.exe"' if relaunch else "")
+        script = Path(tempfile.mkdtemp(prefix="natvox-update-")) / "swap.bat"
+        script.write_text(body, encoding="ascii")
+        return script, ["cmd", "/c", str(script)]
+
+    body = _POSIX_SWAP.replace("@RELAUNCH@",
+                               '"$INSTALL/natvox" &' if relaunch else "")
+    script = Path(tempfile.mkdtemp(prefix="natvox-update-")) / "swap.sh"
+    script.write_text(body)
+    script.chmod(0o755)
+    return script, ["/bin/sh", str(script)]
+
+
+def apply(staged: Path, install: Path | None = None, relaunch: bool = True,
+          spawn=subprocess.Popen) -> Path:
+    """Hand the swap to a detached script and return it.
+
+    The caller is expected to exit promptly after this: the script is waiting
+    for exactly that, and until it happens nothing has changed on disk.
+
+    If the swap fails halfway, the script puts the old directory back.  That is
+    the reason for renaming whole directories rather than copying files over
+    the top of a program somebody is going to run tomorrow.
+    """
+    staged = Path(staged)
+    install = Path(install) if install else install_dir()
+    if install is None:
+        raise UpdateError(
+            "this is running from a checkout, not a downloaded build, so "
+            "there is nothing here to replace -- use git")
+    if not staged.exists():
+        raise UpdateError("nothing has been staged to install")
+
+    if staged.resolve().parent != install.resolve().parent:
+        raise UpdateError("the staged copy is not beside the install, so the "
+                          "swap would be a copy rather than a rename")
+    script, command = _swap_script(relaunch)
+    command = command + [str(os.getpid()), str(install), str(staged)]
+    flags = {}
+    if os.name == "nt":
+        # Detached, or the script dies with the process it is waiting for.
+        flags["creationflags"] = 0x00000008 | 0x08000000   # DETACHED | NO_WINDOW
+    else:
+        flags["start_new_session"] = True
+    spawn(command, cwd=str(install.parent), **flags)
+    return script
+
+
+def discard(install: Path | None = None) -> None:
+    """Throw away anything staged.  Safe to call when there is nothing."""
+    install = Path(install) if install else install_dir()
+    if install is None:
+        return
+    shutil.rmtree(install.parent / STAGING, ignore_errors=True)
+
+
+@dataclass
+class UpdateState:
+    """What the check found, in a form a window or a terminal can show."""
+
+    installed: str
+    release: Release | None = None
+    staged: Path | None = None
+    error: str = ""
+
+    @property
+    def available(self) -> bool:
+        return self.release is not None and is_newer(self.release)
+
+    def summary(self) -> str:
+        if self.error:
+            return self.error
+        if self.release is None:
+            return f"running {self.installed}; no release found"
+        if not self.available:
+            return f"running {self.installed}, which is the published build"
+        line = (f"an update is available: {self.release.summary()}, "
+                f"against {self.installed}")
+        if self.staged:
+            line += "\ndownloaded and checked -- restart to finish installing"
+        return line
+
+
+def state(token: str | None = None) -> UpdateState:
+    """Check, and turn any failure into something worth reading."""
+    from .._build import installed
+
+    try:
+        return UpdateState(installed(), check(token=token))
+    except UpdateError as exc:
+        return UpdateState(installed(), error=str(exc))

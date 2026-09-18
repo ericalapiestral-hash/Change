@@ -20,7 +20,12 @@ and one they will not.
 # add nothing to the bundle and is the kind of line that hides a real missing
 # import behind 30 MB of things that are never loaded.
 hiddenimports = ["natvox.app.gui", "natvox.app.remote", "natvox.app.backend",
-                 "natvox.app.loopback"]
+                 "natvox.app.loopback", "natvox.app.voiceprint",
+                 # Named explicitly although update.py imports it: the whole
+                 # updater is inert without the commit stamp, and a missing
+                 # module that only matters on the update path is one nobody
+                 # would notice until there was an update to miss.
+                 "natvox.app.update", "natvox._build"]
 
 # Qt modules the window never touches.  Each is checked by an import test, so
 # adding one that is actually needed fails the build rather than the program.
