@@ -471,9 +471,12 @@ class TestTheSwapForReal:
         install, staged = self._tree(tmp_path)
         self._run(install, staged)
         log = self._log(tmp_path)
-        assert "waiting for pid" in log
-        assert "installed" in log
+        # What the log is for, rather than its wording: which process, which
+        # two directories, and how far it got.  The two scripts word the first
+        # line differently because only one of them waits on a pid.
+        assert "999999" in log
         assert str(install) in log and str(staged) in log
+        assert "installed" in log
 
     def test_the_log_says_why_it_refused(self, tmp_path):
         install, staged = self._tree(tmp_path, staged_is_a_build=False)
