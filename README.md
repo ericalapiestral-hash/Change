@@ -277,6 +277,24 @@ with `--target`, and the shift it implies is always reported before it is used.
 It sets `f0_min` from the speaker's own floor too, which is the main latency
 control — so fitting the voice usually makes it faster as well.
 
+**The floor comes from a trimmed low tail**, and the first real measurement is
+why. A 126 Hz speaker read *"63–157 Hz, a range of 15.8 semitones"*, and 63 is
+exactly half of 126: a tracker finding twice the period, not a person speaking
+an octave down. The median shrugged it off — an order statistic ignores a tail
+— but the tenth percentile *is* the tail, and that is where `f0_min` comes
+from. Taken at face value it asked for a 53 Hz tracking floor: worse latency
+than the lowest row in the table above, and a floor low enough to invite the
+very error that produced it. Trimmed, the same recording asks for 106 Hz.
+
+The trim is **low side only**, which is not the obvious choice. A symmetric
+gate looks right and throws away half of a speaker who genuinely swings
+between 110 and 220 Hz: their median sits in whichever mode has more frames,
+and a gate centred there cuts the other one. Measured with one — 199 frames of
+396 kept, range collapsed from twelve semitones to zero. Nothing needs
+trimming above the median anyway: a tracker finding *twice* the period is the
+common failure, and the low tail is not a pitch worth tracking down to whether
+it is an error or real creak.
+
 #### What the ±8 semitone limit is actually worth
 
 `NATURAL_PITCH_LIMIT = 8.0` was inherited wisdom: past about that, the story
@@ -733,7 +751,7 @@ reconstructs to −322 dB. It has **not** been run against a real checkpoint.
 
 ```bash
 pip install -e '.[dev]'
-pytest                      # 692 tests
+pytest                      # 694 tests
 python tools/bench.py       # artifact measurements
 
 cd web && npm install && npm test     # 127 more, including the live path

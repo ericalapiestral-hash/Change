@@ -55,6 +55,43 @@ class TestMeasuring:
         # not about a tolerance that happens to pass.
         assert voice.median_hz > 115.0, "a mean here lands near 106 Hz"
 
+    def test_a_halved_period_does_not_become_the_speaker_s_floor(self, speech):
+        """The first real measurement: a 126 Hz speaker read "63-157 Hz, a
+        range of 15.8 semitones", and 63 is exactly half of 126.
+
+        The median survived it -- an order statistic ignores a tail -- but the
+        tenth percentile is the tail, and the converted profile's f0_min comes
+        from there.  Taken at face value it asked for a 53 Hz tracking floor:
+        worse latency than the lowest row in the README's table, and a floor
+        low enough to invite the very error that produced it.
+        """
+        voice = voiceprint.measure(
+            np.concatenate([speech(126.0), speech(63.0, seconds=0.08)]), SR)
+        assert voice.median_hz == pytest.approx(126.0, rel=0.02)
+        assert voice.low_hz > 100.0, "63 Hz is not this speaker's floor"
+        assert voice.octave_errors > 0
+        assert "low tail" in voice.summary()
+
+        floor = voiceprint.suggest(voice).profile.f0_min
+        assert floor > voice.median_hz / 2, "never below a halved period"
+        assert floor > 90.0
+
+    def test_a_genuinely_wide_voice_is_not_clipped(self, speech):
+        """The reason the gate is low-side only.
+
+        A symmetric gate seems obviously right and is not: this speaker's
+        median sits in whichever mode has more frames, and a gate centred
+        there throws the other mode away.  Measured with one: 199 frames of
+        396 kept, and the reported range collapsed from twelve semitones to
+        zero -- half their voice, discarded because they used it.
+        """
+        voice = voiceprint.measure(
+            np.concatenate([speech(100.0), speech(200.0)]), SR)
+        assert voice.octave_errors == 0
+        assert voice.range_semitones == pytest.approx(12.0, abs=1.5)
+        assert voice.low_hz == pytest.approx(100.0, rel=0.05)
+        assert voice.high_hz == pytest.approx(200.0, rel=0.05)
+
     def test_it_reports_the_range_the_speaker_uses(self, speech):
         low, high = speech(110.0, seconds=0.5), speech(220.0, seconds=0.5)
         voice = voiceprint.measure(np.concatenate([low, high]), SR)

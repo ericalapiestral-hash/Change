@@ -76,6 +76,35 @@ HOP_MS = 10.0
 #: How much voiced speech is enough to believe the answer.
 MIN_VOICED_SECONDS = 1.0
 
+#: How far *below* the median a frame may be and still count, in semitones.
+#:
+#: Low side only, and that asymmetry is the whole design.  A symmetric gate
+#: seems obviously right and is not: a speaker who genuinely swings between
+#: 110 and 220 Hz has a median sitting in whichever mode has more frames, and
+#: a gate centred there throws the other mode away -- half their range, gone,
+#: because they used it.  Measured: 199 frames kept of 396, and the reported
+#: range collapsed from twelve semitones to zero.
+#:
+#: Nothing needs trimming above the median.  A tracker finding *twice* the
+#: period is the common failure and lands an octave down; finding half of it
+#: is rare.  So the rule is "ignore the low tail", and it is right for the
+#: thing the low tail is used for either way: ``f0_min`` should be the lowest
+#: pitch worth tracking, and neither an octave error nor genuine creak is
+#: that.  Tracking down to creak is most of what the latency buys.
+#:
+#: The first real measurement made the case.  A 126 Hz speaker read
+#: "63-157 Hz, a range of 15.8 semitones", and 63 is exactly half of 126.
+#: The median shrugged it off -- an order statistic ignores a tail -- but the
+#: tenth percentile *is* the tail, and the converted profile's f0_min comes
+#: from there.  Taken at face value it asked for a 53 Hz tracking floor:
+#: worse latency than the lowest row in the README's own table, and a floor
+#: low enough to invite the very error that produced it.
+#:
+#: Nine semitones is below any habitual tenth percentile and comfortably
+#: above the twelve a halved period lands at, so it separates the two without
+#: having to decide which any one frame is.
+FLOOR_GATE_ST = 9.0
+
 #: Margin below the measured floor for the converted profile's ``f0_min``.
 #:
 #: ``f0_min`` sets the latency floor, so a speaker who never goes below 105 Hz
@@ -102,6 +131,10 @@ class VoicePrint:
     voiced_share: float
     voiced_seconds: float
     seconds: float
+    #: Frames below the floor gate, which the range excludes.  Almost always
+    #: the tracker finding twice the period, sometimes genuine creak, and
+    #: neither is a pitch worth tracking down to -- see :data:`FLOOR_GATE_ST`.
+    octave_errors: int = 0
 
     @property
     def range_semitones(self) -> float:
@@ -126,10 +159,14 @@ class VoicePrint:
             return ("not enough voiced speech to measure -- say a couple of "
                     f"sentences in your ordinary voice ({self.voiced_seconds:.1f}s "
                     f"of {self.seconds:.1f}s was voiced)")
-        return (f"your voice   {self.median_hz:.0f} Hz "
+        line = (f"your voice   {self.median_hz:.0f} Hz "
                 f"({self.low_hz:.0f}-{self.high_hz:.0f} Hz, "
                 f"a range of {self.range_semitones:.1f} semitones)\n"
                 f"  measured over {self.voiced_seconds:.1f}s of voiced speech")
+        if self.octave_errors:
+            line += (f", ignoring a low tail of {self.octave_errors} frames "
+                     "-- creak, or the tracker an octave out")
+        return line
 
 
 def measure(audio, sample_rate: int, f0_min: float = MEASURE_F0_MIN,
@@ -158,13 +195,25 @@ def measure(audio, sample_rate: int, f0_min: float = MEASURE_F0_MIN,
     share = len(pitches) / frames if frames else 0.0
     if not pitches:
         return VoicePrint(sample_rate, 0.0, 0.0, 0.0, share, 0.0, seconds)
+
     values = np.asarray(pitches)
+    # Median first, from everything: it is an order statistic and a tail of
+    # octave errors barely moves it.  Then drop the low tail and take the
+    # percentiles from what is left -- see FLOOR_GATE_ST for why only the low
+    # one, which is not the obvious choice.
+    median = float(np.median(values))
+    kept = values[values >= median / semitones_to_ratio(FLOOR_GATE_ST)]
+    if kept.size:
+        median = float(np.median(kept))
+    else:                                       # nothing survived; say so
+        kept = values
     return VoicePrint(
         sample_rate,
-        float(np.median(values)),
-        float(np.percentile(values, 10)),
-        float(np.percentile(values, 90)),
+        median,
+        float(np.percentile(kept, 10)),
+        float(np.percentile(kept, 90)),
         share, voiced_seconds, seconds,
+        octave_errors=int(values.size - kept.size),
     )
 
 
