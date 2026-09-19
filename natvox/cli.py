@@ -279,10 +279,16 @@ def cmd_loopback(args) -> int:
 def cmd_tune(args) -> int:
     """Record a few seconds and work out the shift this speaker needs.
 
+    With ``--into`` it also keeps the recording, which is the file worth
+    having when the answer is "it sounds wrong": a number describes a voice,
+    a recording is one.
+
     The presets are statements about a speaker nobody has heard: +7 semitones
     lands a 100 Hz voice at 150 and a 140 Hz voice at 210, and only one of
     those is a woman's pitch.  This measures instead.
     """
+    from pathlib import Path
+
     from .app import voiceprint
 
     seconds = args.seconds if args.seconds is not None else 8.0
@@ -297,6 +303,12 @@ def cmd_tune(args) -> int:
     print(suggestion.summary())
     if not voice.usable:
         return 1
+    from .server import write_wav
+    if args.into:
+        raw = Path(args.into) / "your-voice.wav"
+        raw.parent.mkdir(parents=True, exist_ok=True)
+        raw.write_bytes(write_wav(recorded, args.rate))
+        print(f"\nthe recording itself is in {raw}")
     print("\nto use it:")
     print(f"  natvox live --pitch {suggestion.profile.pitch_semitones:.1f} "
           f"--formant {suggestion.profile.formant_semitones:.1f} "
@@ -366,8 +378,9 @@ def cmd_ladder(args) -> int:
     if not voice.usable:
         return 1
     folder = Path(args.into) if args.into else Path.cwd() / "natvox-ladder"
-    written = studio.save_ladder(folder, rungs)
-    print(f"\n{len(written)} files in {folder}:")
+    written = studio.save_ladder(folder, rungs, source=recorded)
+    print(f"\n{len(written)} files in {folder} -- 00-original.wav is the "
+          f"recording itself, untouched:")
     for rung in rungs:
         print(f"  {rung.hz:5.0f} Hz   pitch {rung.semitones:+5.1f} st")
     print("\nPlay them in order and pick the first that sounds right, then:")

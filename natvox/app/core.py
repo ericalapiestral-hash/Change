@@ -464,11 +464,20 @@ class Studio:
                                           profile)))
         return voice, rungs
 
-    def save_ladder(self, folder, rungs) -> list[Path]:
-        """Write a ladder out, named so it plays in order and says what it is."""
+    def save_ladder(self, folder, rungs, source=None) -> list[Path]:
+        """Write a ladder out, named so it plays in order and says what it is.
+
+        The unconverted recording goes in beside it as ``00-original.wav``.
+        A ladder answers "which of these is right"; when the answer is "none
+        of them", the next question is whether the input was ever any good,
+        and that file is the only thing that can say.
+        """
         target = Path(folder)
         target.mkdir(parents=True, exist_ok=True)
         written = []
+        raw = self.recent_input() if source is None else np.asarray(source)
+        if raw.size:
+            written.append(self.save_wav(target / "00-original.wav", raw))
         for i, rung in enumerate(rungs, 1):
             name = (f"{i:02d}-{rung.hz:.0f}Hz-"
                     f"{rung.semitones:+.1f}st.wav".replace("+", "up"))

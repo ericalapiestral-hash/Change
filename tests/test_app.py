@@ -354,12 +354,27 @@ class TestThePitchLadder:
     def test_the_files_are_named_so_they_play_in_order(self, said, tmp_path):
         studio = Studio(Settings(voice="female"))
         _, rungs = studio.ladder(audio=said)
-        written = studio.save_ladder(tmp_path / "ladder", rungs)
+        written = studio.save_ladder(tmp_path / "ladder", rungs, source=said)
         names = [p.name for p in written]
         assert names == sorted(names), "so a file manager plays them in order"
         assert all(p.exists() and p.stat().st_size > 1000 for p in written)
-        assert "150Hz" in names[0] and "225Hz" in names[-1]
-        assert "up" in names[0], "a + in a filename is a nuisance on Windows"
+        assert "150Hz" in names[1] and "225Hz" in names[-1]
+        assert "up" in names[1], "a + in a filename is a nuisance on Windows"
+
+    def test_the_recording_itself_is_the_first_file(self, said, tmp_path):
+        """A ladder answers "which of these is right". When the answer is
+        "none of them", the next question is whether the input was ever any
+        good, and this is the only file that can say."""
+        import soundfile as sf
+
+        studio = Studio(Settings(voice="female"))
+        _, rungs = studio.ladder(audio=said)
+        written = studio.save_ladder(tmp_path / "ladder", rungs, source=said)
+        assert written[0].name == "00-original.wav"
+        back, rate = sf.read(written[0])
+        assert rate == 48000
+        assert np.allclose(back[:said.size], said[:back.size], atol=2e-4), \
+            "untouched means untouched"
 
     def test_nothing_said_is_an_empty_ladder_not_a_crash(self):
         studio = Studio(Settings(voice="female"))

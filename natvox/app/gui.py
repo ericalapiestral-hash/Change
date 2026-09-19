@@ -627,13 +627,23 @@ class Window(QtWidgets.QWidget):
         voice, rungs = self.studio.ladder()
         if not voice.usable:
             return voice
-        self.studio.save_ladder(folder, rungs)
+        written = self.studio.save_ladder(folder, rungs)
         return (voice.summary() + "\n"
-                + f"  {len(rungs)} files in {folder} -- play them in order and "
-                  "pick the first that sounds right, then set Pitch to the "
-                  "number in its name.")
+                + f"  {len(written)} files in {folder}. 00-original.wav is your "
+                  "microphone untouched -- listen to that one first. Then play "
+                  "the rest in order and pick the first that sounds right.")
 
     def save_capture(self) -> None:
+        """Save the converted audio and the microphone beside it.
+
+        Both, always.  "It sounds robotic" is a statement about the difference
+        between two recordings, and only one of them existed: there was no way
+        to get the unconverted microphone out of this program at all, so a
+        complaint about the output could not be told apart from a complaint
+        about the input -- a noisy mic, a headset with its own processing, a
+        pitch the tracker cannot follow.  The dry file is the one that answers
+        that, and it costs a second file.
+        """
         audio = self.studio.recent_input()
         if audio.size == 0:
             self.report("Nothing recorded yet -- start it and say something.")
@@ -642,8 +652,12 @@ class Window(QtWidgets.QWidget):
             self, "Save", str(Path.home() / "natvox.wav"), "WAV (*.wav)")
         if not path:
             return
-        self.studio.save_wav(path, self.studio.convert(audio))
-        self.report(f"Saved {path}")
+        wet = Path(self.studio.save_wav(path, self.studio.convert(audio)))
+        dry = wet.with_name(wet.stem + "-original" + wet.suffix)
+        self.studio.save_wav(dry, audio)
+        self.report(f"Saved {wet.name} and {dry.name} -- the second one is "
+                    "your microphone, untouched. If both sound wrong, the "
+                    "problem is before this program.")
 
     def closeEvent(self, event) -> None:        # noqa: N802 - Qt naming
         self.stop()

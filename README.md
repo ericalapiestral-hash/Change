@@ -336,6 +336,14 @@ question you can answer.
 The rungs are landing pitches rather than shifts, and the tract shift is the
 same on every one, so what varies between them is exactly one thing.
 
+**`00-original.wav` is the microphone, untouched — listen to that one first.**
+It sorts first for that reason. "It sounds robotic" is a statement about the
+difference between two recordings, and for a while only one of them existed:
+there was no way to get the unconverted input out of this program at all, so a
+complaint about the output could not be told apart from a complaint about the
+input — a noisy mic, a headset doing its own processing, a pitch the tracker
+cannot follow. `Save what I just said` writes both files now too.
+
 **The threshold stays where it is anyway**, because not one of those
 measurements can hear. It is a warning rather than a wall, and the warning now
 says the degradation is gradual and to listen before believing it either way.
@@ -751,7 +759,7 @@ reconstructs to −322 dB. It has **not** been run against a real checkpoint.
 
 ```bash
 pip install -e '.[dev]'
-pytest                      # 694 tests
+pytest                      # 696 tests
 python tools/bench.py       # artifact measurements
 
 cd web && npm install && npm test     # 127 more, including the live path

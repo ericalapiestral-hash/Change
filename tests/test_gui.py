@@ -413,9 +413,11 @@ class TestAnswers:
             window.status.text()
         window.stop()
         written = sorted(tmp_path.glob("*.wav"))
-        assert len(written) == len(LADDER_HZ)
-        assert "150Hz" in written[0].name
+        assert len(written) == len(LADDER_HZ) + 1, "the rungs and the original"
+        assert written[0].name == "00-original.wav", "sorts first, listen first"
+        assert "150Hz" in written[1].name
         assert "pick the first" in window.status.text()
+        assert "untouched" in window.status.text()
 
     def test_being_up_to_date_just_says_so(self, window, monkeypatch):
         from natvox.app import update
@@ -460,6 +462,29 @@ class TestAnswers:
                             lambda *a, **k: applied.append(a))
         window.close()
         assert not applied
+
+    def test_saving_keeps_the_microphone_too(self, window, tmp_path, monkeypatch):
+        """"It sounds robotic" is a statement about the difference between two
+        recordings, and only one of them existed."""
+        import soundfile as sf
+
+        target = tmp_path / "out.wav"
+        monkeypatch.setattr(QtWidgets.QFileDialog, "getSaveFileName",
+                            staticmethod(lambda *a, **k: (str(target), "")))
+        window.start()
+        pump(1.0)
+        window.stop()
+        window.save_capture()
+        original = tmp_path / "out-original.wav"
+        assert target.exists() and original.exists()
+
+        wet, rate = sf.read(target)
+        dry, _ = sf.read(original)
+        assert rate == 48000
+        assert dry.shape[0] > 0
+        assert not np.allclose(dry[:len(wet)], wet[:len(dry)]), \
+            "the two files must not be the same recording"
+        assert "microphone" in window.status.text()
 
     def test_saving_before_anything_was_said_explains_itself(self, window):
         window.save_capture()
