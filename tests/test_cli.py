@@ -352,3 +352,79 @@ class TestLoopback:
     def test_exclusive_mode_off_windows_says_why(self, capsys):
         assert main(["live", "--exclusive"]) == 1
         assert "WASAPI" in capsys.readouterr().err
+
+
+class TestDiagnose:
+    """The one command that can be pointed at somebody else's recording.
+
+    It exists because the first person to listen said it sounded robotic
+    while every metric in this repository said the engine was clean, and
+    nothing here could measure the file they were describing.
+    """
+
+    def test_it_measures_a_recording_and_finds_nothing_wrong_with_this_one(
+            self, wav, capsys):
+        assert main(["app", "--diagnose", str(wav)]) == 0
+        out = capsys.readouterr().out
+        assert "the recording" in out
+        assert "the pitch tracker, on this recording" in out
+        assert "nothing here looks wrong" in out
+
+    def test_it_says_how_to_ask_the_harder_question(self, wav, capsys):
+        assert main(["app", "--diagnose", str(wav)]) == 0
+        assert "-p female" in capsys.readouterr().out
+
+    def test_a_preset_also_measures_what_the_engine_makes_of_it(self, wav, capsys):
+        assert main(["app", "--diagnose", str(wav), "-p", "female"]) == 0
+        out = capsys.readouterr().out
+        assert "what the engine did to it" in out
+        assert out.count("the pitch tracker, on this recording") == 2
+        assert "downstream of the" in out, "said once, about the recording"
+        assert out.count("downstream of the") == 1, "not about the output"
+
+    def test_a_bare_shift_counts_as_asking(self, wav, capsys):
+        assert main(["app", "--diagnose", str(wav), "--pitch", "6.6"]) == 0
+        out = capsys.readouterr().out
+        assert "what the engine did to it" in out
+        assert "+6." in out, "the shift it actually delivered"
+
+    def test_it_explains_a_file_it_cannot_read(self, tmp_path, capsys):
+        assert main(["app", "--diagnose", str(tmp_path / "nope.wav")]) == 1
+        assert "could not read" in capsys.readouterr().err
+
+    def test_an_empty_file_is_not_a_crash(self, tmp_path, sample_rate, capsys):
+        empty = tmp_path / "empty.wav"
+        sf.write(empty, np.zeros(0), sample_rate)
+        assert main(["app", "--diagnose", str(empty)]) == 1
+        assert "no audio in it" in capsys.readouterr().err
+
+    def test_it_reads_a_file_without_soundfile(self, wav, monkeypatch, capsys):
+        """libsndfile is a binary that has to survive the bundler.
+
+        The files this is pointed at are ones this program wrote, and the
+        standard library has always been able to open those.
+        """
+        import builtins
+
+        real_import = builtins.__import__
+
+        def no_soundfile(name, *args, **kwargs):
+            if name == "soundfile":
+                raise OSError("sndfile library not found")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", no_soundfile)
+        assert main(["app", "--diagnose", str(wav)]) == 0
+        assert "the pitch tracker" in capsys.readouterr().out
+
+    def test_stereo_is_averaged_rather_than_interleaved(self, tmp_path,
+                                                        utterance, sample_rate,
+                                                        capsys):
+        """Interleaving two channels reads as a voice an octave up."""
+        audio, _ = utterance
+        both = tmp_path / "stereo.wav"
+        sf.write(both, np.stack([audio, audio], axis=1), sample_rate)
+        assert main(["app", "--diagnose", str(both)]) == 0
+        pitch = next(line for line in capsys.readouterr().out.splitlines()
+                     if "median pitch" in line)
+        assert "110 Hz" in pitch, pitch

@@ -65,6 +65,16 @@ REBUILD = {p.name for p in api.PARAMETERS if p.changes_latency} - {
     "pitch_semitones", "formant_semitones"}
 
 
+class LongAnswer(str):
+    """A result too long for the status line.
+
+    The status label is one framed line near the bottom of the window, which
+    is the right size for "saved two files" and the wrong size for twenty
+    lines of measurements.  Answers this long get a window of their own, and
+    the label gets the headline.
+    """
+
+
 class Worker(QtCore.QObject):
     """Run something slow off the UI thread and deliver the result back."""
 
@@ -286,16 +296,22 @@ class Window(QtWidgets.QWidget):
             "Measures the pitch you have actually been speaking at and works "
             "out the shift it needs. The presets guess.")
         self.tune.clicked.connect(self.tune_to_voice)
+        self.why = QtWidgets.QPushButton("Why does it sound wrong?")
+        self.why.setToolTip(
+            "Measures what your microphone sent and what came out of the "
+            "engine, and says which of the two is the problem.")
+        self.why.clicked.connect(self.explain_the_sound)
         # These three read what has been said.  Before anything has, they have
         # nothing to work on -- and a button that looks exactly like the ones
         # that do work, then answers with a sentence at the bottom of the
         # window, is how somebody concludes the program does not work at all.
-        self._needs_audio = (self.ab, self.save, self.tune, self.ladder)
+        self._needs_audio = (self.ab, self.save, self.tune, self.ladder,
+                             self.why)
         for button in self._needs_audio:
             button.setEnabled(False)
             button.setToolTip("Press Start and say a couple of sentences first.")
         for button in (self.power, self.ab, self.save, self.check,
-                       self.tune, self.ladder, self.update_button):
+                       self.tune, self.ladder, self.why, self.update_button):
             row.addWidget(button)
         return box
 
@@ -520,6 +536,10 @@ class Window(QtWidgets.QWidget):
             self.report(result.summary())
             self._offer_update(result)
             return
+        if isinstance(result, LongAnswer):
+            self.report(result.splitlines()[0])
+            self._show_long("Why it sounds the way it does", str(result))
+            return
         self.report(result.summary() if hasattr(result, "summary") else str(result))
 
     def run_self_test(self) -> None:
@@ -632,6 +652,30 @@ class Window(QtWidgets.QWidget):
                 + f"  {len(written)} files in {folder}. 00-original.wav is your "
                   "microphone untouched -- listen to that one first. Then play "
                   "the rest in order and pick the first that sounds right.")
+
+    def explain_the_sound(self) -> None:
+        """Measure what went in and what came out, and say which one is wrong.
+
+        Everything else this program measures needs to know the right answer
+        in advance, which is why none of it could be pointed at the recording
+        somebody made of their own voice and called robotic.  This can.
+        """
+        if self.studio.recent_input().size == 0:
+            self.report("Start it and say a couple of sentences first.")
+            return
+        self.report("measuring...")
+        self._worker.run(lambda: LongAnswer(self.studio.diagnose()))
+
+    def _show_long(self, title: str, text: str) -> None:
+        box = QtWidgets.QMessageBox(self)
+        box.setWindowTitle(title)
+        box.setText(text.split("\n\n")[0])
+        box.setDetailedText(text)
+        # Monospace: every one of these is a column of numbers beside the
+        # numbers a clean recording gives, and a proportional font destroys
+        # the comparison that is the whole point of printing both.
+        box.setStyleSheet("QTextEdit { font-family: monospace; }")
+        box.exec()
 
     def save_capture(self) -> None:
         """Save the converted audio and the microphone beside it.

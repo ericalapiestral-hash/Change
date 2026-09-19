@@ -519,3 +519,56 @@ class TestPersistence:
             assert win.exclusive.isChecked() is False
         finally:
             win.deleteLater()
+
+
+class TestExplainingTheSound:
+    """The button for "it sounds robotic", which was the first real report.
+
+    Every other measurement in this program needs the right answer in advance
+    -- the formant error against the formants it was asked for, the pitch
+    error against a contour a synthesiser produced -- so not one of them could
+    be pointed at what somebody's microphone actually sent.
+    """
+
+    def test_before_anything_was_said_it_explains_itself(self, window):
+        window.explain_the_sound()
+        assert "say a couple of sentences" in window.status.text()
+
+    def test_it_measures_both_sides_and_opens_a_window(self, window, monkeypatch):
+        shown = {}
+
+        monkeypatch.setattr(window, "_show_long",
+                            lambda title, text: shown.update(title=title,
+                                                             text=text))
+        window.start()
+        pump(1.5)
+        window.stop()
+        window.explain_the_sound()
+        for _ in range(200):                    # the measuring runs off-thread
+            pump(0.05)
+            if shown:
+                break
+        assert shown, "the diagnosis never arrived"
+        assert "what your microphone sent" in shown["text"]
+        assert "what the engine did to it" in shown["text"]
+        assert "octave jumps" in shown["text"]
+
+    def test_the_status_line_gets_the_headline_not_the_whole_thing(self, window,
+                                                                   monkeypatch):
+        """Twenty lines of numbers in a one-line label is how a working
+        program looks broken."""
+        monkeypatch.setattr(window, "_show_long", lambda *a: None)
+        window.start()
+        pump(1.5)
+        window.stop()
+        window.explain_the_sound()
+        for _ in range(200):
+            pump(0.05)
+            if "microphone" in window.status.text():
+                break
+        assert "\n" not in window.status.text()
+
+    def test_it_needs_audio_like_the_others_do(self, window):
+        assert window.why in window._needs_audio
+        assert not window.why.isEnabled()
+        assert "Start" in window.why.toolTip()

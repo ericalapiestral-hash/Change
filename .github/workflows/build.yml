@@ -68,6 +68,23 @@ jobs:
         working-directory: packaging
         run: .\dist\natvox\natvox-cli.exe --check --seconds 1.0
 
+      # The one command pointed at a file somebody else made.  Nothing else
+      # here opens a file, so nothing else would notice if the bundler failed
+      # to carry libsndfile -- and a diagnostic that cannot read the recording
+      # it is handed is worse than none, because it is asked for only when
+      # something is already wrong.
+      - name: The diagnosis runs on a real file
+        working-directory: packaging
+        run: |
+          python -c "import sys, soundfile as sf; sys.path.insert(0, '../tools'); from synth_speech import utterance; a, _ = utterance(48000); sf.write('probe.wav', a, 48000)"
+          $out = (.\dist\natvox\natvox-cli.exe --diagnose probe.wav -p female 2>&1 | Out-String)
+          Write-Host $out
+          foreach ($want in @("median pitch", "octave jumps", "what the engine did to it")) {
+            if ($out -notmatch [regex]::Escape($want)) {
+              throw "--diagnose did not report '$want'"
+            }
+          }
+
       # A runner has no sound card, so "nothing to list" is the right answer
       # and exit 1 is how both of these say it.  What is being checked is the
       # code underneath: enumerating host APIs, and reading the per-device
@@ -196,6 +213,11 @@ jobs:
             "swaps it in as the program exits. The window has a button for it. It never",
             "installs without being asked: this build is not code-signed, and something",
             "unsigned that also replaces itself unasked is not a thing to ship.",
+            "",
+            "``natvox-cli.exe --diagnose your-file.wav`` measures a recording and says",
+            "what looks wrong with it, and with a preset measures what the engine makes",
+            "of it too -- which is how to tell \"the microphone handed it something",
+            "unstable\" from \"the engine made it so\" without a listener in the room.",
             "",
             "``natvox-cli.exe --loopback`` times a sweep out of the output device and",
             "back in through the input, which is the only way to find out what the",

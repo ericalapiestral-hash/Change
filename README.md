@@ -24,6 +24,7 @@ natvox app                 # pick a microphone, pick a voice, hold space to A/B
 natvox app --check         # first: can this computer keep up?
 natvox app --tune          # then: the presets are a guess about YOUR voice
 natvox app --ladder        # and: pick the pitch by ear, not by slider
+natvox app --diagnose f.wav  # and if it sounds wrong: which end is wrong
 ```
 
 **Start with `--tune`.** A preset is a fixed interval, not a destination:
@@ -349,6 +350,70 @@ measurements can hear. It is a warning rather than a wall, and the warning now
 says the degradation is gradual and to listen before believing it either way.
 A 95 Hz speaker needs +11.5 st to clear the crossover; that is past the
 threshold, and it may well be the right thing to do.
+
+#### Ask the recording what is wrong
+
+Every other measurement here needs to know the right answer in advance. The
+formant error is measured against the formants the engine was asked for; the
+pitch error against a contour a synthesiser was told to produce. That is what
+makes them sharp, and it is also why not one of them can be pointed at a file
+somebody recorded of their own voice.
+
+```bash
+natvox-cli.exe --diagnose 00-original.wav              # what the microphone sent
+natvox-cli.exe --diagnose 00-original.wav -p female    # and what the engine made of it
+```
+
+or **Why does it sound wrong?** in the window, which measures what you have
+just been saying and what came out of the engine, both, without saving a file
+first.
+
+These measurements are all self-consistency ones — how far this frame is from
+the one before it, how far the speech sits above the quiet between it, where
+the energy stops — so they need no ground truth and work on anything:
+
+```
+the recording
+  peak              -6.0 dBFS
+  speech           -17.8 dBFS
+  the quiet bits   -73.8 dBFS   (56 dB below the speech)
+  energy up to       4.4 kHz   (99.5% of it; no verdict attached)
+
+the pitch tracker, on this recording
+  voiced             71% of frames
+  median pitch       110 Hz
+  octave jumps      0.00 per second   (clean: 0.00)
+  voicing flips     3.38 per second   (clean: 3.4)
+  frame to frame    0.09 st median, 0.26 at the 95th  (clean: 0.10)
+```
+
+The `clean:` column is this repository's synthetic utterance, which is clean by
+construction. **Octave jumps are the number to read.** Each one puts a run of
+grains at twice or half the right spacing, and that — a machine deciding wrong,
+not a machine sounding like a machine — is what "robotic" usually is. The
+reference gives none at all, and stays at none down to 10 dB SNR, so a noisy
+room is not an available excuse for a tracker that produces them.
+
+With a preset it runs the file through the engine and measures that too, which
+answers the only question worth asking:
+
+```
+what the engine did to it
+  pitch             110 ->   162 Hz   (+6.7 st)
+  octave jumps     0.00 ->  0.00 per second
+  frame to frame   0.09 ->  0.08 st median
+```
+
+Did the microphone hand the engine something already unstable, or did the
+engine make it so? Only the second is fixable here, and until this existed
+there was no way to tell them apart without a listener in the room.
+
+The band number deliberately carries no verdict. Two rules were tried — an
+absolute edge, then a cliff detector — and both called the known-good reference
+band-limited, because a voice really does have almost nothing above 5 kHz. A
+diagnostic that cries wolf on the clean case is one nobody finishes reading, so
+the number stayed and the verdict went; compare it against another recording
+from the same machine instead.
 
 ### More than pitch and formants
 
@@ -797,6 +862,17 @@ synthesiser with gliding formants, jitter, shimmer, fricatives and pauses. A
 recording would be more realistic but gives no ground truth — with synthesis we
 know the exact pitch contour and formant tracks, so "the formants landed 0.7 dB
 off" is a statement that can be checked rather than an impression.
+
+**That is also the limit of every number in this repository.** Not one of them
+has been measured on a human being: a synthetic utterance exercises the engine
+but it is not a microphone in a room, and it cannot be one. The first real
+report — that it sounded robotic — arrived while every artifact metric here
+said the engine was clean, and there was no measurement that could be pointed
+at the recording being described. `--diagnose` is the answer to that: it is
+built out of self-consistency measures, so it needs no ground truth and runs on
+whatever a microphone sends. The calibration still comes from the synthetic
+utterance, so it says "this is what clean looks like" rather than "this is what
+a person looks like", and it holds down to 10 dB SNR.
 
 ## Limits
 

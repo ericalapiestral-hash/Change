@@ -743,3 +743,48 @@ class TestTheABComparison:
         studio.bypass = True
         assert studio.bypass is True
         studio.stop()
+
+
+class TestTheDiagnosis:
+    """Two reports, because "it sounds robotic" is about a difference.
+
+    The split that matters is whether the microphone handed the engine
+    something already unstable or the engine made it so, and only the second
+    is fixable from in here.
+    """
+
+    def test_it_reports_both_sides_and_compares_them(self, utterance, sample_rate):
+        audio, _ = utterance
+        text = Studio(Settings(voice="female",
+                               sample_rate=sample_rate)).diagnose(audio)
+        assert "what your microphone sent" in text
+        assert "the same thing, through female" in text
+        assert "what the engine did to it" in text
+
+    def test_the_second_report_is_not_told_to_blame_a_microphone(
+            self, utterance, sample_rate):
+        """"The problem is downstream of the microphone" is a true thing to
+        say about a recording and a meaningless one about the engine's own
+        output."""
+        audio, _ = utterance
+        text = Studio(Settings(voice="female",
+                               sample_rate=sample_rate)).diagnose(audio)
+        assert text.count("downstream of the") == 1
+
+    def test_it_sees_the_shift_that_was_applied(self, utterance, sample_rate):
+        audio, _ = utterance
+        text = Studio(Settings(voice="female",
+                               sample_rate=sample_rate)).diagnose(audio)
+        shift = next(line for line in text.splitlines()
+                     if line.strip().startswith("pitch "))
+        assert "st)" in shift, shift
+
+    def test_it_reads_the_loop_recorder_when_given_nothing(self, voice_audio):
+        studio = Studio(Settings(voice="female"))
+        studio.start(OfflineBackend(voice_audio, 256, realtime=True, loop=True))
+        time.sleep(1.2)
+        studio.stop()
+        assert "what your microphone sent" in studio.diagnose()
+
+    def test_saying_nothing_is_not_a_crash(self):
+        assert Studio(Settings(voice="female")).diagnose()

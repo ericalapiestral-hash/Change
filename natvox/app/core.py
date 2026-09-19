@@ -497,6 +497,31 @@ class Studio:
         source = self.recent_input() if audio is None else audio
         return voiceprint.measure(source, self.settings.sample_rate)
 
+    def diagnose(self, audio=None):
+        """Why it sounds the way it does, measured rather than guessed.
+
+        Two reports, because "it sounds robotic" is a statement about a
+        difference and the split that matters is which side made it: did the
+        microphone hand the engine something already unstable -- a headset
+        doing its own noise suppression, a room, a clipping input level -- or
+        did the engine do it?  Only the second is fixable from in here, and
+        until this existed there was no way to tell them apart without a
+        listener in the room.
+        """
+        from . import diagnose as look_at
+
+        source = self.recent_input() if audio is None else audio
+        rate = self.settings.sample_rate
+        before = look_at.look(source, rate)
+        after = look_at.look(self.convert(source), rate)
+        return "\n".join([
+            "what your microphone sent", "",
+            before.summary(), "", "-" * 68, "",
+            f"the same thing, through {self.settings.voice}", "",
+            after.summary(is_recording=False), "",
+            look_at.compare(before, after),
+        ])
+
     def tune(self, target_hz=None, audio=None, apply: bool = False):
         """Fit the current voice to this speaker, and optionally use it.
 

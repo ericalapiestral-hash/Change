@@ -21,6 +21,7 @@ and one they will not.
 # import behind 30 MB of things that are never loaded.
 hiddenimports = ["natvox.app.gui", "natvox.app.remote", "natvox.app.backend",
                  "natvox.app.loopback", "natvox.app.voiceprint",
+                 "natvox.app.diagnose",
                  # Named explicitly although update.py imports it: the whole
                  # updater is inert without the commit stamp, and a missing
                  # module that only matters on the update path is one nobody

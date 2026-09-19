@@ -317,6 +317,86 @@ def cmd_tune(args) -> int:
     return 0
 
 
+def _read_audio(path):
+    """``(mono float64, sample_rate)`` from an audio file on disk.
+
+    soundfile first, because it reads everything; the standard library after,
+    because ``libsndfile`` is a binary that has to survive the bundler and the
+    files this is pointed at are ones this program wrote -- 16-bit mono WAV,
+    which ``wave`` has always been able to open.  A diagnostic that cannot run
+    is worse than one that reads fewer formats.
+    """
+    try:
+        import soundfile as sf
+    except (ImportError, OSError):
+        sf = None
+    if sf is not None:
+        audio, rate = sf.read(str(path), dtype="float64", always_2d=True)
+        return np.asarray(audio).mean(axis=1), int(rate)
+    from .server import read_wav
+    return read_wav(path.read_bytes())
+
+
+#: Voice settings that, if any is given, mean "and show me what the engine
+#: makes of it" rather than only "show me the recording".
+_VOICE_ARGS = ("pitch", "formant", "f0_min", "f0_max", "breathiness",
+               "intonation", "tilt_db", "output_gain_db", "shift_unvoiced")
+
+
+def cmd_diagnose(args) -> int:
+    """Ask a recording what is wrong with it.
+
+    Everything else in this program measures against a known answer, which is
+    what makes those measurements sharp and also why none of them can be
+    pointed at somebody's microphone.  This one needs no answer in advance, so
+    it can be pointed at the file the program just saved -- and with a preset,
+    at what the engine made of it, which is the only way to tell "the
+    microphone handed it something unstable" from "the engine made it so"
+    without a listener in the room.
+    """
+    from pathlib import Path
+
+    from .app import diagnose
+
+    path = Path(args.diagnose)
+    try:
+        audio, rate = _read_audio(path)
+    except Exception as exc:                    # noqa: BLE001 - any read error
+        print(f"could not read {path}: {exc}", file=sys.stderr)
+        return 1
+    if not audio.size:
+        print(f"{path} has no audio in it", file=sys.stderr)
+        return 1
+
+    before = diagnose.look(audio, rate)
+    print(f"{path.name}\n")
+    print(before.summary())
+
+    asked = args.preset is not None or any(
+        getattr(args, name, None) is not None for name in _VOICE_ARGS)
+    if not asked:
+        print("\nAdd a preset (-p female) or a shift (--pitch 6.6) to also "
+              "measure what the\nengine makes of it.")
+        return 0
+
+    profile = _profile_from_args(args)
+    _warn(profile)
+    changer = VoiceChanger(rate, profile)
+    block = getattr(args, "block", None) or 256
+    pieces = [changer.process(audio[i:i + block])
+              for i in range(0, audio.size, block)]
+    pieces.append(changer.flush())
+    converted = np.concatenate(pieces)[changer.latency_samples:][:audio.size]
+
+    after = diagnose.look(converted, rate)
+    print("\n" + "-" * 68 + "\n")
+    print(f"the same recording, through {args.preset or 'these settings'}\n")
+    print(after.summary(is_recording=False))
+    print()
+    print(diagnose.compare(before, after))
+    return 0
+
+
 def cmd_update(args) -> int:
     """Check for a newer build, and install it if asked.
 
@@ -429,6 +509,8 @@ def cmd_app(args) -> int:
         return cmd_ladder(args)
     if args.tune:
         return cmd_tune(args)
+    if args.diagnose:
+        return cmd_diagnose(args)
     if args.check:
         studio = Studio()
         seconds = args.seconds if args.seconds is not None else 2.0
@@ -518,6 +600,11 @@ def build_parser() -> argparse.ArgumentParser:
                      help="record once, render it at six pitches, and let your "
                           "ear pick; 'which sounds like a woman' is a question "
                           "you can answer, '+9.5 st' is not")
+    app.add_argument("--diagnose", metavar="FILE",
+                     help="measure a recording and say what looks wrong with "
+                          "it; with a preset, also what the engine makes of "
+                          "it. Point it at the file 'Save what I just said' "
+                          "wrote")
     app.add_argument("--into", metavar="DIR",
                      help="where --ladder writes its files")
     app.add_argument("--target", type=float, default=None, metavar="HZ",
