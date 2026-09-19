@@ -632,9 +632,19 @@ mismatch deletes the file. An asset with *no* published digest is also refused,
 rather than installed unverified.
 
 **It cannot overwrite a running program, so it does not try.** The new copy is
-unpacked beside the old one and a small script waits for the process to exit,
-renames the old directory aside, renames the new one into place, and puts the
-old one back if that fails. A crash halfway leaves a program that starts.
+unpacked beside the old one and a small script renames the old directory aside,
+renames the new one into place, and puts the old one back if that fails. A
+crash halfway leaves a program that starts.
+
+**The rename is the wait.** Windows refuses to rename a directory containing a
+running executable, so the rename fails while the program is alive and succeeds
+the moment it is not — no polling, and it waits out a virus scanner or a second
+copy holding a file, which polling for a process ID never could. The first
+version *did* poll, with `tasklist | find`, and hung forever: the script runs
+detached, with no console and no standard handles, and a pipe between two
+console programs in that state does not complete. It would have done that on a
+user's machine after downloading 93 MB, silently. Every step is logged beside
+the install now, because a detached process has nowhere else to say anything.
 
 Two details worth knowing. The comparison is on the **commit**, not the
 version: every build so far has been `0.3.0`, so a version comparison would
@@ -659,6 +669,13 @@ ends with nothing installed at all. Both are fixed, and the swap script is now
 *run* by the tests rather than pattern-matched — the batch file on Windows CI
 and the shell script here, each proving that a refusal leaves the old copy
 working.
+
+And the build installs a real update onto a throwaway copy of itself before
+publishing, because the review's last word was that CI could not have caught
+the download bug: it ran the check, which succeeded, and stopped. The half that
+was broken was the half nothing ran. That gate then failed three times in a
+row on things nobody had seen — a silent hang, its cause, and a stale
+assertion — each before anyone had to meet them.
 
 ## Server
 
