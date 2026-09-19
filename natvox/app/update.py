@@ -97,13 +97,24 @@ Or make the repository public and none of this is needed."""
 #: socket delivering one byte a minute never times out and never finishes.
 DOWNLOAD_DEADLINE = 900.0
 
-#: Waits for the process to go, then swaps two sibling directories by renaming.
+#: Swaps two sibling directories by renaming, once the old one is free.
 #:
-#: Every step is checked and every step is logged, beside the install, because
-#: this runs detached with no console: when it goes wrong there is otherwise
-#: nothing at all to read, and this is the one component that can leave
-#: somebody with no program.  The log is what the next failure gets debugged
-#: from, including the first time it failed in CI.
+#: **The rename is the wait.**  The first version polled with
+#: ``tasklist | find`` until the process was gone, and that hung forever: this
+#: script runs detached, with no console and no standard handles, and a pipe
+#: between two console programs in that state does not complete.  CI caught it
+#: with `Terminate orphan process: pid (7224) (find)` -- on a real machine it
+#: would simply never have installed anything, silently.
+#:
+#: Nothing was lost by deleting it.  Windows refuses to rename a directory
+#: containing a running executable, so the rename fails while the program is
+#: alive and succeeds the moment it is not.  The thing being waited for *is*
+#: the operation, which is both simpler and the only version that can also
+#: wait out a virus scanner or a second copy of the program holding a file.
+#:
+#: Every step is logged beside the install, because a detached process with no
+#: console has nowhere else to say anything, and this is the one component
+#: that can leave somebody with no program at all.
 #:
 #: The checks that matter:
 #:
@@ -113,9 +124,6 @@ DOWNLOAD_DEADLINE = 900.0
 #:    path that ends with nothing installed at all.
 #:  * The old copy is kept until the new one has been shown to contain a
 #:    program, and is only ever removed after being confirmed to be one.
-#:  * The rename is retried, because another copy of the program may still be
-#:    holding a file when this one has gone.  Waiting is the right answer to a
-#:    lock; giving up halfway is not.
 _WINDOWS_SWAP = """@echo off
 setlocal
 set "PID=%~1"
@@ -125,17 +133,9 @@ set "LEFT=%~4"
 set "OLD=%INSTALL%.old"
 set "LOG=%INSTALL%.update.log"
 
-echo [%DATE% %TIME%] waiting for pid %PID%>"%LOG%"
+echo [%DATE% %TIME%] swapping after pid %PID% lets go>"%LOG%"
 echo   install "%INSTALL%">>"%LOG%"
 echo   staged  "%STAGED%">>"%LOG%"
-
-:wait
-tasklist /FI "PID eq %PID%" 2>nul | find "%PID%" >nul
-if not errorlevel 1 (
-  ping -n 2 127.0.0.1 >nul
-  goto wait
-)
-echo [%TIME%] it is gone>>"%LOG%"
 
 if exist "%OLD%\\natvox.exe" rmdir /s /q "%OLD%"
 if exist "%OLD%" (
@@ -148,13 +148,11 @@ if not exist "%STAGED%\\natvox.exe" (
 )
 
 :aside
+ping -n 2 127.0.0.1 >nul
 move "%INSTALL%" "%OLD%" >>"%LOG%" 2>&1
 if not exist "%OLD%\\natvox.exe" (
   set /a LEFT-=1
-  if %LEFT% GTR 0 (
-    ping -n 2 127.0.0.1 >nul
-    goto aside
-  )
+  if %LEFT% GTR 0 goto aside
   echo [%TIME%] could not move "%INSTALL%" aside -- leaving everything as it is>>"%LOG%"
   exit /b 1
 )

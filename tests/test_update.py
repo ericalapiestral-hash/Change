@@ -391,6 +391,29 @@ class TestApplying:
         with pytest.raises(update.UpdateError, match="use git"):
             update.apply(staged, None, spawn=lambda *a, **k: None)
 
+    def test_the_windows_script_does_not_pipe_between_console_programs(self):
+        """The first version polled with `tasklist | find` and hung forever.
+
+        This script runs detached: no console, no standard handles, and a pipe
+        between two console programs in that state does not complete.  CI
+        caught it as `Terminate orphan process: pid (7224) (find)`; on a real
+        machine it would simply never have installed anything, and never have
+        said why.
+
+        Nothing was lost by deleting it -- Windows refuses to rename a
+        directory containing a running executable, so the rename already
+        waits for exactly the thing the poll was waiting for.
+        """
+        assert "|" not in update._WINDOWS_SWAP
+        assert "tasklist" not in update._WINDOWS_SWAP
+
+    def test_the_rename_is_what_waits(self):
+        """Not a sleep and not a poll: the operation itself.  That is also the
+        only version that waits out a virus scanner or a second copy of the
+        program holding a file."""
+        assert "goto aside" in update._WINDOWS_SWAP
+        assert 'move "%INSTALL%" "%OLD%"' in update._WINDOWS_SWAP
+
     def test_the_script_cleans_itself_up(self):
         script, _ = update._swap_script(relaunch=False)
         body = script.read_text()
