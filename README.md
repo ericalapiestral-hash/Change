@@ -740,14 +740,16 @@ the install now, because a detached process has nowhere else to say anything.
 Two details worth knowing. The comparison is on the **commit**, not the
 version: every build so far has been `0.3.0`, so a version comparison would
 offer nothing ever — the commit is written into the bundle by the release
-workflow and read back from `natvox/_build.py`. And because this repository is
-private, GitHub answers an unauthenticated request with **404 rather than 403**
-— the same thing it says when a release genuinely does not exist, and there is
-no way to tell them apart from the client. So the message walks through making
-a read-only token and setting it with `setx`, rather than naming an environment
-variable and leaving it there. When a token *is* present and the answer is
-still 404, it says the token worked and this is not an access problem, because
-sending somebody to make a second token is an hour of the wrong work.
+workflow and read back from `natvox/_build.py`. And on a **private** repository
+GitHub answers an unauthenticated request with **404 rather than 403** — the
+same thing it says when a release genuinely does not exist, and there is no way
+to tell them apart from the client. (Public, none of this applies: the release
+and its asset are readable by anyone and no token is involved.) So the message
+walks through making a read-only token and setting it with `setx`, rather than
+naming an environment variable and leaving it there. When a token *is* present
+and the answer is still 404, it says the token worked and this is not an access
+problem, because sending somebody to make a second token is an hour of the
+wrong work.
 
 The first version of all this was reviewed by five readers told to break it,
 and the headline finding was that it could never have worked: the download used

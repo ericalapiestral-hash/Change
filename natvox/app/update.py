@@ -79,7 +79,7 @@ CONNECT_TIMEOUT = 20.0
 #: answer and a useless one: it assumes knowing what a token is, where GitHub
 #: keeps them, which of the several kinds to make, and how Windows sets an
 #: environment variable.  Every one of those is a place to give up.
-HOW_TO_GET_A_TOKEN = f"""This repository is private, so the update needs a token.
+HOW_TO_GET_A_TOKEN = f"""If the repository is private, the update needs a token.
 
   1. Open https://github.com/settings/personal-access-tokens/new
   2. Repository access -> Only select repositories -> {REPO}
