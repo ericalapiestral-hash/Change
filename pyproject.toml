@@ -17,7 +17,7 @@ dependencies = [
 [project.optional-dependencies]
 realtime = ["sounddevice>=0.4.6"]
 app = ["sounddevice>=0.4.6", "PySide6-Essentials>=6.5"]
-dev = ["pytest>=7.0"]
+dev = ["pytest>=7.0", "PyYAML>=6.0"]
 
 [project.scripts]
 natvox = "natvox.cli:main"
