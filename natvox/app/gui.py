@@ -39,6 +39,15 @@ from .core import BLOCK_SIZES, Settings, Studio
 #: not itself become the thing using the processor.
 REFRESH_MS = 50
 
+#: What the running readout says when nothing is running.
+#:
+#: "idle" is true and says nothing.  The first thing somebody does with this
+#: window is press buttons, and three of them read a recording that does not
+#: exist yet; the readout is where they look to find out why.
+IDLE_TEXT = "not running -- press Start, then talk. The In meter should move."
+IDLE_HEARD_TEXT = ("not running. Fit it to my voice and Save a pitch ladder "
+                   "work on what you already said.")
+
 #: (setting, label, minimum, maximum, step, decimals)
 SLIDERS = (
     ("pitch_semitones", "Pitch", -12.0, 12.0, 0.1, 1),
@@ -158,6 +167,14 @@ class Window(QtWidgets.QWidget):
         layout.addWidget(self._meter_box())
         self.status = QtWidgets.QLabel("")
         self.status.setWordWrap(True)
+        self.status.setTextFormat(QtCore.Qt.PlainText)
+        # Framed and always the same height, so a message is somewhere the eye
+        # already is rather than a line that appears at the bottom edge of the
+        # window and can be clipped away entirely.
+        self.status.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        self.status.setMinimumHeight(52)
+        self.status.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
+        self.status.setMargin(6)
         layout.addWidget(self.status)
         layout.addStretch(1)
 
@@ -269,6 +286,14 @@ class Window(QtWidgets.QWidget):
             "Measures the pitch you have actually been speaking at and works "
             "out the shift it needs. The presets guess.")
         self.tune.clicked.connect(self.tune_to_voice)
+        # These three read what has been said.  Before anything has, they have
+        # nothing to work on -- and a button that looks exactly like the ones
+        # that do work, then answers with a sentence at the bottom of the
+        # window, is how somebody concludes the program does not work at all.
+        self._needs_audio = (self.ab, self.save, self.tune, self.ladder)
+        for button in self._needs_audio:
+            button.setEnabled(False)
+            button.setToolTip("Press Start and say a couple of sentences first.")
         for button in (self.power, self.ab, self.save, self.check,
                        self.tune, self.ladder, self.update_button):
             row.addWidget(button)
@@ -282,7 +307,7 @@ class Window(QtWidgets.QWidget):
         grid.addWidget(self.meter_in, 0, 1)
         grid.addWidget(QtWidgets.QLabel("Out"), 1, 0)
         grid.addWidget(self.meter_out, 1, 1)
-        self.readout = QtWidgets.QLabel("idle")
+        self.readout = QtWidgets.QLabel(IDLE_TEXT)
         self.readout.setTextFormat(QtCore.Qt.PlainText)
         grid.addWidget(self.readout, 2, 0, 1, 2)
         return box
@@ -455,6 +480,12 @@ class Window(QtWidgets.QWidget):
 
     # -- feedback ----------------------------------------------------------
     def refresh(self) -> None:
+        heard = self.studio.captured_seconds > 0.0
+        for button in getattr(self, "_needs_audio", ()):
+            if button.isEnabled() != heard:
+                button.setEnabled(heard)
+                button.setToolTip("" if heard else
+                                  "Press Start and say a couple of sentences first.")
         done, total = self._download
         if total and done < total:
             self.status.setText(f"downloading... {done / 1048576:.0f} of "
@@ -463,6 +494,7 @@ class Window(QtWidgets.QWidget):
         self.meter_in.set_level(metrics.input_peak)
         self.meter_out.set_level(metrics.output_peak)
         if not metrics.running:
+            self.readout.setText(IDLE_TEXT if not heard else IDLE_HEARD_TEXT)
             return
         pitch = f"{metrics.f0_hz:.0f} Hz" if metrics.voiced and metrics.f0_hz > 0 else "--"
         trouble = ""

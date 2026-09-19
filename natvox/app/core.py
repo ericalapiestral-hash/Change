@@ -183,6 +183,10 @@ class _Metered:
         self._write = pos
         self._filled = min(size, self._filled + n)
 
+    @property
+    def captured_samples(self) -> int:
+        return self._filled
+
     def recent_input(self) -> np.ndarray:
         """The last few seconds of input, oldest first."""
         if self._filled < self._capture.size:
@@ -405,6 +409,19 @@ class Studio:
     # -- judging the result -------------------------------------------------
     def recent_input(self) -> np.ndarray:
         return self._metered.recent_input() if self._metered else np.zeros(0)
+
+    @property
+    def captured_seconds(self) -> float:
+        """How much has been heard, without copying any of it.
+
+        A window asks this every frame to decide whether the buttons that read
+        the recording should be clickable, and `recent_input()` copies up to
+        twelve seconds of audio to answer the same question.
+        """
+        metered = self._metered
+        if metered is None:
+            return 0.0
+        return metered.captured_samples / self.settings.sample_rate
 
     def convert(self, audio: np.ndarray) -> np.ndarray:
         """Run an array through the current settings, offline."""

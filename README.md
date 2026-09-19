@@ -733,7 +733,7 @@ reconstructs to −322 dB. It has **not** been run against a real checkpoint.
 
 ```bash
 pip install -e '.[dev]'
-pytest                      # 686 tests
+pytest                      # 692 tests
 python tools/bench.py       # artifact measurements
 
 cd web && npm install && npm test     # 127 more, including the live path

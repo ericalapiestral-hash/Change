@@ -112,6 +112,59 @@ class TestControls:
         assert window.studio.current()["shift_unvoiced"] is False
 
 
+class TestWhatItLooksLikeBeforeYouStart:
+    """The first thing somebody does is press buttons.
+
+    Three of them read a recording that does not exist yet.  A button that
+    looks exactly like the ones that work, and then answers with a sentence at
+    the bottom edge of the window, is how somebody concludes the program does
+    not work at all -- which is what happened.
+    """
+
+    def test_the_buttons_that_need_a_recording_are_not_clickable(self, window):
+        pump(0.1)
+        for button in (window.tune, window.ladder, window.save, window.ab):
+            assert not button.isEnabled(), button.text()
+            assert "Start" in button.toolTip()
+        assert window.power.isEnabled(), "and the one that starts it is"
+        assert window.check.isEnabled(), "so is the one that needs no audio"
+
+    def test_they_become_clickable_once_it_has_heard_something(self, window):
+        window.start()
+        pump(0.5)
+        assert window.studio.captured_seconds > 0.0
+        for button in (window.tune, window.ladder, window.save):
+            assert button.isEnabled(), button.text()
+            assert button.toolTip() == ""
+        window.stop()
+
+    def test_the_readout_says_what_to_do_rather_than_idle(self, window):
+        pump(0.1)
+        text = window.readout.text()
+        assert "Start" in text and "In meter" in text
+        assert text != "idle"
+
+    def test_after_stopping_it_says_the_recording_is_still_there(self, window):
+        window.start()
+        pump(0.5)
+        window.stop()
+        pump(0.1)
+        assert "already said" in window.readout.text()
+        assert window.tune.isEnabled(), "the recording outlives the stream"
+
+    def test_asking_anyway_still_explains_itself(self, window):
+        """The button is disabled, but the method is what the CLI and the
+        tests call, and it must not depend on the button for its manners."""
+        window.tune_to_voice()
+        assert "say a couple of sentences" in window.status.text()
+
+    def test_the_status_line_is_somewhere_it_can_be_seen(self, window):
+        """It was a bare label at the bottom edge, which a short window clips
+        away entirely -- and every message the program has goes through it."""
+        assert window.status.minimumHeight() >= 40
+        assert window.status.frameShape() != QtWidgets.QFrame.NoFrame
+
+
 class TestRunning:
     def test_start_and_stop(self, window):
         window.start()
