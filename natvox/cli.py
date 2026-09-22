@@ -117,6 +117,9 @@ def cmd_process(args) -> int:
     _warn(profile)
     audio, rate = sf.read(args.input, dtype="float64", always_2d=True)
 
+    if getattr(args, "method", "psola") == "world":
+        return _process_with_world(args, audio, rate, profile)
+
     changer = VoiceChanger(rate, profile)
     channels = []
     for ch in range(audio.shape[1]):
@@ -131,6 +134,34 @@ def cmd_process(args) -> int:
     sf.write(args.output, out[:, 0] if out.shape[1] == 1 else out, rate)
     print(f"wrote {args.output}  ({out.shape[0] / rate:.2f}s, {rate} Hz, "
           f"{out.shape[1]}ch, engine latency {changer.latency_ms:.1f} ms)")
+    return 0
+
+
+def _process_with_world(args, audio, rate, profile) -> int:
+    """Analysis and resynthesis, for the shifts the waveform method cannot reach.
+
+    The two engines are not ranked: below about eight semitones PSOLA keeps
+    the waveform somebody actually produced and is the more faithful of them.
+    Past that it is the only one that works, and on a recording with any real
+    room in it, it is quieter by 4 dB.
+    """
+    import soundfile as sf
+
+    from .dsp import world
+
+    try:
+        channels = [world.convert(audio[:, ch], rate,
+                                  pitch_semitones=profile.pitch_semitones,
+                                  formant_semitones=profile.formant_semitones,
+                                  breathiness=profile.breathiness)
+                    for ch in range(audio.shape[1])]
+    except world.WorldUnavailable as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    out = np.stack(channels, axis=1)
+    sf.write(args.output, out[:, 0] if out.shape[1] == 1 else out, rate)
+    print(f"wrote {args.output}  ({out.shape[0] / rate:.2f}s, {rate} Hz, "
+          f"{out.shape[1]}ch, analysis and resynthesis)")
     return 0
 
 
@@ -553,6 +584,11 @@ def build_parser() -> argparse.ArgumentParser:
     proc = sub.add_parser("process", help="convert an audio file")
     proc.add_argument("input")
     proc.add_argument("output")
+    proc.add_argument("--method", choices=("psola", "world"), default="psola",
+                      help="psola moves the waveform and is the more faithful "
+                           "below about 8 semitones; world takes the voice "
+                           "apart and rebuilds it, which is the only thing "
+                           "that works above that")
     proc.add_argument("--block", type=int, default=1024,
                       help="processing block size (does not affect the result)")
     _add_voice_options(proc)

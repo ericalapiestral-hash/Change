@@ -22,6 +22,8 @@ and one they will not.
 hiddenimports = ["natvox.app.gui", "natvox.app.remote", "natvox.app.backend",
                  "natvox.app.loopback", "natvox.app.voiceprint",
                  "natvox.app.diagnose",
+                 # A C extension reached only through a lazy import.
+                 "natvox.dsp.world", "pyworld",
                  # Named explicitly although update.py imports it: the whole
                  # updater is inert without the commit stamp, and a missing
                  # module that only matters on the update path is one nobody

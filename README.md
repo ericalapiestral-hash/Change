@@ -478,6 +478,46 @@ synthetic signals — the first two because a synthesiser is not a person in a
 room, the third because a synthesiser gives exactly zero and a statistic that
 is only ever exercised at zero is never tested where it is used.
 
+#### A second engine, for the shifts the first cannot reach
+
+PSOLA moves the recording's own waveform. That is why it sounds natural at
+small shifts — the waveform inside each grain is the one that was recorded —
+and it is also its ceiling twice over: the recording's noise is stretched
+along with the voice, and past about eight semitones the grains stop
+overlapping the way a vocal tract could have produced.
+
+Both limits showed up on the first real recording. `--method world` takes the
+voice apart instead — pitch, vocal tract response, and how much of each frame
+is noise rather than pulses — and builds a new waveform from them. None of the
+original waveform survives, so none of its noise is stretched either.
+
+```bash
+natvox process in.wav out.wav --method world --pitch 10 --formant 2.6
+```
+
+Measured on that recording, with an autocorrelation harmonic-to-noise ratio
+validated against known SNRs:
+
+| | HNR |
+|---|---|
+| the recording, untouched | 11.7 dB |
+| PSOLA, +10 semitones | 13.2 dB |
+| **WORLD, +10 semitones** | **17.2 dB** |
+
+and the pitch it delivers is exact: **0.00 semitones of error at +4, +7, +10
+and +13** against a reference whose true contour is known. There is no ceiling
+where PSOLA has one.
+
+The synthetic reference understates the gap — 1.3 dB rather than 4.0 — and it
+is worth knowing by how much. Its pitch contour is smooth and its noise is
+white, and both are kind to a method that stretches the waveform. A person's
+pitch moves, and a room is not white.
+
+**Neither engine is the better one.** Below about eight semitones PSOLA keeps
+a waveform somebody actually produced and is the more faithful; the vocal
+tract response here is smoothed rather than exact. Past that, this is the only
+one that works. PSOLA stays the default.
+
 ### More than pitch and formants
 
 `male_to_female` moves pitch and vocal-tract size and nothing else. That is the

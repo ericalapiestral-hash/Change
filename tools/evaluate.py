@@ -142,6 +142,53 @@ def hnr_db(x: np.ndarray, sr: int, f0: float) -> float:
     return 10.0 * np.log10(peak / (1.0 - peak))
 
 
+def harmonic_to_noise_db(x: np.ndarray, sr: int, periods: float = 4.0,
+                         f0_min: float = 60.0, f0_max: float = 600.0) -> float:
+    """Median harmonic-to-noise ratio over the voiced frames, in dB.
+
+    Autocorrelation at the lag of each frame's own period, over a window of a
+    few of those periods.  Both details are the point, and :func:`hnr_db`
+    above has neither: it takes ONE f0 for a whole file and a fixed window,
+    which is right for a sustained vowel and wrong for connected speech.
+
+    The fixed-window version was used on connected speech in this project and
+    read a recording's natural intonation as noise.  Measured on synthetic
+    signals with **no noise at all**, only a moving pitch, it reported:
+
+        vibrato +-0.25 st -> 15.8 dB      vibrato +-1.0 st ->  8.2 dB
+
+    Three conclusions were drawn from numbers like those and all three were
+    wrong.  This one, on the same signals, reports 26.4 and 15.6 dB, and
+    tracks a known SNR almost exactly -- 30/20/15/10/5 dB of real noise comes
+    back as 27.6/19.7/14.9/10.0/5.0.
+
+    Some sensitivity to a moving pitch remains, and should: consecutive
+    periods of a voice whose pitch is moving genuinely do correlate less.
+    """
+    from natvox.dsp.f0 import YinF0Tracker
+
+    x = np.asarray(x, dtype=np.float64).reshape(-1)
+    tracker = YinF0Tracker(sr, f0_min=f0_min, f0_max=f0_max)
+    span, hop = tracker.span, max(1, sr // 100)
+    scores = []
+    for i in range(0, max(0, x.size - span), hop):
+        frame = tracker.estimate(x[i:i + span], i)
+        if not frame.voiced or frame.f0 <= 0:
+            continue
+        period = sr / frame.f0
+        n, lag = int(periods * period), int(round(period))
+        if lag >= n or i + n + lag >= x.size:
+            continue
+        a = x[i:i + n] - x[i:i + n].mean()
+        b = x[i + lag:i + lag + n] - x[i + lag:i + lag + n].mean()
+        if b.size < n or a.dot(a) < 1e-18 or b.dot(b) < 1e-18:
+            continue
+        r = float(a.dot(b) / np.sqrt(a.dot(a) * b.dot(b)))
+        r = min(max(r, 1e-6), 1.0 - 1e-6)
+        scores.append(10.0 * np.log10(r / (1.0 - r)))
+    return float(np.median(scores)) if scores else float("nan")
+
+
 def pitch_track(x: np.ndarray, sr: int, f0_min=60.0, f0_max=600.0, hop=240):
     """Frame-wise F0 using the engine's own tracker (validated separately)."""
     from natvox.dsp.f0 import YinF0Tracker

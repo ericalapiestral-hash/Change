@@ -428,3 +428,46 @@ class TestDiagnose:
         pitch = next(line for line in capsys.readouterr().out.splitlines()
                      if "median pitch" in line)
         assert "110 Hz" in pitch, pitch
+
+
+class TestTheVocoderFromTheCommandLine:
+    def test_it_writes_audio_of_the_same_length_and_rate(self, wav, tmp_path):
+        pytest.importorskip("pyworld")
+        out = tmp_path / "out.wav"
+        assert main(["process", str(wav), str(out), "--method", "world",
+                     "--pitch", "10", "--formant", "2.6"]) == 0
+        original, rate = sf.read(wav)
+        converted, out_rate = sf.read(out)
+        assert out_rate == rate and converted.shape == original.shape
+        assert np.max(np.abs(converted)) > 0.01
+
+    def test_it_says_which_engine_ran(self, wav, tmp_path, capsys):
+        pytest.importorskip("pyworld")
+        assert main(["process", str(wav), str(tmp_path / "o.wav"),
+                     "--method", "world", "--pitch", "6"]) == 0
+        assert "analysis and resynthesis" in capsys.readouterr().out
+
+    def test_psola_is_still_the_default(self, wav, tmp_path, capsys):
+        assert main(["process", str(wav), str(tmp_path / "o.wav"),
+                     "--pitch", "3"]) == 0
+        assert "engine latency" in capsys.readouterr().out
+
+    def test_stereo_survives_it(self, tmp_path, utterance, sample_rate):
+        pytest.importorskip("pyworld")
+        audio, _ = utterance
+        src = tmp_path / "in.wav"
+        sf.write(src, np.stack([audio, audio * 0.8], axis=1), sample_rate)
+        out = tmp_path / "out.wav"
+        assert main(["process", str(src), str(out), "--method", "world",
+                     "--pitch", "7"]) == 0
+        assert sf.read(out)[0].shape == (audio.size, 2)
+
+    def test_a_missing_vocoder_is_a_sentence_not_a_traceback(
+            self, wav, tmp_path, monkeypatch, capsys):
+        from natvox.dsp import world
+
+        monkeypatch.setattr(world, "convert", lambda *a, **k: (_ for _ in ()).throw(
+            world.WorldUnavailable("the WORLD vocoder needs pyworld")))
+        assert main(["process", str(wav), str(tmp_path / "o.wav"),
+                     "--method", "world"]) == 1
+        assert "pyworld" in capsys.readouterr().err
