@@ -198,7 +198,23 @@ class Window(QtWidgets.QWidget):
         grid.addWidget(QtWidgets.QLabel("Preset"), 0, 0)
         grid.addWidget(self.voice, 0, 1, 1, 2)
 
-        for row, (name, label, lo, hi, step, decimals) in enumerate(SLIDERS, start=1):
+        self.method = QtWidgets.QComboBox()
+        self.method.addItem("Natural (60 ms)", "psola")
+        self.method.addItem("Rebuilt (160 ms) -- for big shifts and singing",
+                            "world")
+        self.method.setToolTip(
+            "Natural moves the waveform you produced, which is the more "
+            "faithful of the two below about 8 semitones.\n"
+            "Rebuilt takes the voice apart and synthesises a new one: quieter "
+            "on a recording with any room in it, exact at any shift, and the "
+            "only one that holds together on a sung note. It costs delay.")
+        self.method.setCurrentIndex(
+            max(0, self.method.findData(self.studio.settings.method)))
+        self.method.currentIndexChanged.connect(self._method_changed)
+        grid.addWidget(QtWidgets.QLabel("Engine"), 1, 0)
+        grid.addWidget(self.method, 1, 1, 1, 2)
+
+        for row, (name, label, lo, hi, step, decimals) in enumerate(SLIDERS, start=2):
             slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
             slider.setRange(int(round(lo / step)), int(round(hi / step)))
             slider.setProperty("setting", name)
@@ -217,7 +233,7 @@ class Window(QtWidgets.QWidget):
         self.shift_unvoiced = QtWidgets.QCheckBox("Shift consonants too")
         self.shift_unvoiced.toggled.connect(
             lambda on: self._apply({"shift_unvoiced": bool(on)}))
-        grid.addWidget(self.shift_unvoiced, len(SLIDERS) + 1, 1, 1, 2)
+        grid.addWidget(self.shift_unvoiced, len(SLIDERS) + 2, 1, 1, 2)
         return box
 
     def _device_box(self) -> QtWidgets.QWidget:
@@ -564,6 +580,36 @@ class Window(QtWidgets.QWidget):
         from .remote import probe
         block = int(self.block_size.currentText())
         self._worker.run(lambda: probe(url, block_size=block))
+
+    def _method_changed(self) -> None:
+        """Switching engines restarts the audio: they do not share a delay.
+
+        Swapping one for the other under a running stream would move the
+        conversion delay by a tenth of a second mid-sentence, which is worse
+        than the half-second of silence this costs instead.
+        """
+        chosen = self.method.currentData()
+        if chosen == self.studio.settings.method:
+            return
+        if chosen == "world":
+            from ..dsp import world
+            if not world.available():
+                self.method.setCurrentIndex(self.method.findData("psola"))
+                self.report("That engine needs pyworld, which this build does "
+                            "not have.")
+                return
+        was_running = self.studio.running
+        if was_running:
+            self.stop()
+        self.studio.settings.method = chosen
+        if was_running:
+            self.start()
+        self.report("Rebuilt: takes the voice apart and synthesises a new "
+                    "one. 160 ms of delay, and the only one that holds "
+                    "together on a sung note."
+                    if chosen == "world" else
+                    "Natural: moves the waveform you produced. 60 ms of "
+                    "delay, and the more faithful below about 8 semitones.")
 
     def tune_to_voice(self) -> None:
         """Fit the shift to whoever has been talking.

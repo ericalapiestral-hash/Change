@@ -72,6 +72,11 @@ class Settings:
     latency: str = "low"
     remote_url: str = ""
     use_remote: bool = False
+    #: Which engine converts.  "psola" moves the recorded waveform and costs
+    #: 60 ms; "world" takes the voice apart and rebuilds it, costs 160 ms, and
+    #: is the only one that holds together past about 8 semitones or when the
+    #: voice is sung.
+    method: str = "psola"
 
     def save(self, path: Path | None = None) -> Path:
         target = Path(path or settings_path())
@@ -301,16 +306,27 @@ class Studio:
 
     def _push(self) -> None:
         self.last_error = None
-        session = self._session
+        session = self._session or self._live_converter()
         if session is None:
             return
         try:
             session.set(self.profile())
-        except api.ParameterError as exc:
+        except (api.ParameterError, ValueError) as exc:
             # Outside the session's declared budget.  Rebuilding would move the
             # delay under a listener mid-sentence, so the honest thing is to
             # say so and keep playing.
             self.last_error = str(exc)
+
+    def _live_converter(self):
+        """The vocoder, if that is what is running.
+
+        It has no hot-swap machinery because it does not need any: the window
+        function reads its settings every hop, so a slider lands inside one.
+        """
+        from ..dsp.world import LiveConverter
+
+        inner = getattr(self._metered, "converter", None)
+        return inner if isinstance(inner, LiveConverter) else None
 
     # -- devices -----------------------------------------------------------
     def devices(self) -> list[Device]:
@@ -336,6 +352,20 @@ class Studio:
             from .remote import RemoteConverter
             converter = RemoteConverter(self.settings.remote_url, rate,
                                         self.profile())
+            self._session = None
+        elif self.settings.method == "world":
+            from ..dsp.world import LiveConverter
+
+            profile = self.profile()
+            converter = LiveConverter(rate,
+                                      pitch_semitones=profile.pitch_semitones,
+                                      formant_semitones=profile.formant_semitones,
+                                      breathiness=profile.breathiness,
+                                      f0_min=profile.f0_min,
+                                      f0_max=profile.f0_max)
+            # No hot-swap: this engine is rebuilt when a setting moves, where
+            # api.Session pads its delay so a slider never shifts the audio in
+            # time. Saying so is better than a session that quietly cannot.
             self._session = None
         else:
             session = api.Session(rate, self.profile())

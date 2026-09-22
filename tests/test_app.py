@@ -788,3 +788,71 @@ class TestTheDiagnosis:
 
     def test_saying_nothing_is_not_a_crash(self):
         assert Studio(Settings(voice="female")).diagnose()
+
+
+class TestTheStudioCanHoldEitherEngine:
+    """The callback does not know which one it has, which is the point.
+
+    api.Session pads its delay so that moving a slider never shifts the audio
+    in time. The vocoder has no such machinery and does not need it: its
+    window function reads the settings every hop, so a change lands inside
+    one of them.
+    """
+
+    def settings(self):
+        return Settings(voice="female", method="world")
+
+    def test_it_runs_the_vocoder_when_asked(self, voice_audio):
+        pytest.importorskip("pyworld")
+        from natvox.dsp.world import LiveConverter
+
+        studio = Studio(self.settings())
+        studio.start(OfflineBackend(voice_audio, 256, realtime=True, loop=True))
+        time.sleep(0.6)
+        assert isinstance(studio._metered.converter, LiveConverter)
+        studio.stop()
+
+    def test_psola_is_still_what_it_does_by_default(self, voice_audio):
+        studio = Studio(Settings(voice="female"))
+        studio.start(OfflineBackend(voice_audio, 256, realtime=True, loop=True))
+        assert studio._session is not None, "the hot-swapping session"
+        studio.stop()
+
+    def test_a_slider_moves_it_without_a_rebuild(self, voice_audio):
+        pytest.importorskip("pyworld")
+
+        studio = Studio(self.settings())
+        studio.start(OfflineBackend(voice_audio, 256, realtime=True, loop=True))
+        time.sleep(0.4)
+        converter = studio._metered.converter
+        studio.adjust(pitch_semitones=9.0)
+        assert converter.pitch_semitones == pytest.approx(9.0)
+        assert studio._metered.converter is converter, "no rebuild"
+        assert studio.last_error is None
+        studio.stop()
+
+    def test_moving_the_tracked_range_says_why_it_cannot(self, voice_audio):
+        """It sizes the delay, and moving the delay mid-sentence shifts the
+        audio in time."""
+        pytest.importorskip("pyworld")
+
+        studio = Studio(self.settings())
+        studio.start(OfflineBackend(voice_audio, 256, realtime=True, loop=True))
+        time.sleep(0.4)
+        studio.adjust(f0_min=120.0)
+        assert studio.last_error and "delay" in studio.last_error
+        studio.stop()
+
+    def test_the_setting_is_remembered(self, tmp_path):
+        path = tmp_path / "settings.json"
+        Settings(voice="female", method="world").save(path)
+        assert Settings.load(path).method == "world"
+
+    def test_it_costs_more_delay_and_says_so(self, voice_audio):
+        pytest.importorskip("pyworld")
+
+        studio = Studio(self.settings())
+        studio.start(OfflineBackend(voice_audio, 256, realtime=True, loop=True))
+        time.sleep(0.4)
+        assert studio._metered.converter.latency_ms > 100.0
+        studio.stop()

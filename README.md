@@ -493,7 +493,14 @@ original waveform survives, so none of its noise is stretched either.
 
 ```bash
 natvox process in.wav out.wav --method world --pitch 10 --formant 2.6
+natvox live --method world --pitch 10 --formant 2.6
 ```
+
+or the **Engine** box in the window, which offers *Natural (60 ms)* and
+*Rebuilt (160 ms) — for big shifts and singing*. Switching restarts the audio
+on purpose: the two have different delays, and swapping one for the other
+under a live stream would move the conversion delay by a tenth of a second
+mid-sentence.
 
 Measured on that recording, with an autocorrelation harmonic-to-noise ratio
 validated against known SNRs:
@@ -517,6 +524,51 @@ pitch moves, and a room is not white.
 a waveform somebody actually produced and is the more faithful; the vocal
 tract response here is smoothed rather than exact. Past that, this is the only
 one that works. PSOLA stays the default.
+
+##### Running it live
+
+The vocoder wants a whole utterance and a callback hands it 256 samples, so
+the live path windows it: a hop with context on both sides that is analysed
+and then thrown away, and a cross-fade between consecutive outputs, because
+two windows synthesised independently do not agree at their seam and butting
+them together puts a click at every hop. That machinery already existed for
+neural models; this is the same problem.
+
+**It converts at 24 kHz whatever the stream's rate is**, and that single
+choice is what makes it possible. Measured on the reference utterance at +10
+semitones, resampling in and out included:
+
+| internal rate | speed | HNR |
+|---|---|---|
+| 48000 Hz | ×1.3 | 23.5 dB |
+| 32000 Hz | ×4.7 | 23.3 dB |
+| **24000 Hz** | **×9.4** | **23.4 dB** |
+| 16000 Hz | ×11.9 | 23.3 dB |
+
+Seven times the speed for a tenth of a decibel. The window is analysed three
+times over, so ×1.3 cannot run live at all and ×9.4 leaves room for a machine
+that is also doing something else. End to end it streams at **×2.9 real time
+with no clicks at the seams**.
+
+The delay is the price, and it does not go away by asking:
+
+| hop / context | delay | HNR |
+|---|---|---|
+| 80 / 80 ms | 160 ms | 21.6 dB |
+| 60 / 60 ms | 120 ms | 19.6 dB |
+| 40 / 40 ms | 80 ms | 15.4 dB |
+| 30 / 30 ms | 60 ms | **no voice at all** |
+
+Below about three pitch periods of context the vocoder has nothing to
+estimate a vocal tract from, and what comes back is at the right level with
+no periodicity in it. That is a refusal now, with the arithmetic in the
+message, rather than a setting somebody can quietly ruin the sound with.
+
+**Moving a slider does not rebuild it.** The window function reads its
+settings every hop, so a change lands inside one — 80 ms — with nothing to
+cross-fade. What cannot move is the tracked pitch range: it sizes the delay,
+and moving the delay mid-sentence shifts the audio in time. The window says
+that instead of doing it.
 
 ##### Singing and shouting
 

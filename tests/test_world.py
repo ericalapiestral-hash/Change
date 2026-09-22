@@ -337,3 +337,104 @@ class TestSingingAndShouting:
         quiet = sung(sample_rate, 250.0, level=0.05)
         assert np.max(np.abs(quiet)) < world.CEILING
         assert world.limit(quiet, sample_rate) == pytest.approx(quiet, abs=1e-9)
+
+
+class TestConvertingALiveStream:
+    """The vocoder wants a whole utterance; a callback hands it 256 samples.
+
+    The gap between those is a windowing problem, and the traps are the ones
+    every block-based model meets: windows synthesised independently do not
+    agree at their seam, and a window too short to hold a few pitch periods
+    has nothing to estimate a vocal tract from.
+    """
+
+    def stream(self, audio, sample_rate, **kw):
+        live = world.LiveConverter(sample_rate, pitch_semitones=10.0,
+                                   formant_semitones=2.0, **kw)
+        blocks = [live.process(audio[i:i + 256])
+                  for i in range(0, audio.size, 256)]
+        blocks.append(live.flush())
+        out = np.concatenate(blocks)
+        return live, out[live.latency_samples:live.latency_samples + audio.size]
+
+    def test_it_converts_as_well_as_the_offline_path(self, utterance, sample_rate):
+        from evaluate import harmonic_to_noise_db
+
+        audio, _ = utterance
+        _, streamed = self.stream(audio, sample_rate)
+        offline = world.convert(audio, sample_rate, pitch_semitones=10.0,
+                                formant_semitones=2.0)
+        assert harmonic_to_noise_db(streamed, sample_rate) > \
+            harmonic_to_noise_db(offline, sample_rate) - 3.0
+
+    def test_the_seams_do_not_click(self, utterance, sample_rate):
+        """Two windows butted together put a click at every hop."""
+        audio, _ = utterance
+        _, out = self.stream(audio, sample_rate)
+        steps = np.abs(np.diff(out))
+        hop = sample_rate // 100
+        blocks = steps[:steps.size - steps.size % hop].reshape(-1, hop)
+        local = np.median(blocks, axis=1, keepdims=True) + 1e-9
+        assert int(np.count_nonzero(blocks > local * 60)) == 0
+
+    def test_it_delivers_the_pitch_it_was_asked_for(self, utterance, sample_rate):
+        audio, _ = utterance
+        _, out = self.stream(audio, sample_rate)
+        assert delivered_semitones(audio, out, sample_rate) == pytest.approx(
+            10.0, abs=0.5)
+
+    def test_it_runs_faster_than_real_time(self, utterance, sample_rate):
+        """The window is analysed three times over -- hop plus context on each
+        side -- so the vocoder has to beat real time by more than three."""
+        import time
+
+        audio, _ = utterance
+        start = time.perf_counter()
+        self.stream(audio, sample_rate)
+        speed = (audio.size / sample_rate) / (time.perf_counter() - start)
+        assert speed > 1.5, f"only x{speed:.1f} real time"
+
+    def test_it_converts_at_24_khz_whatever_the_stream_is(self, sample_rate):
+        live = world.LiveConverter(sample_rate)
+        assert live.internal_rate == world.INTERNAL_RATE < sample_rate
+
+    def test_a_low_rate_stream_is_not_upsampled_to_meet_it(self):
+        live = world.LiveConverter(16000)
+        assert live.internal_rate == 16000
+
+    def test_a_context_too_short_to_hold_a_voice_is_refused(self, sample_rate):
+        """30 ms at 70 Hz returned a signal at the right level with no
+        periodicity in it at all. Silently."""
+        with pytest.raises(ValueError, match="no voice in it"):
+            world.LiveConverter(sample_rate, context_ms=30.0, f0_min=70.0)
+
+    def test_the_refusal_moves_with_the_tracking_floor(self, sample_rate):
+        """A higher floor is a shorter period, so less context suffices."""
+        world.LiveConverter(sample_rate, context_ms=30.0, f0_min=120.0)
+        with pytest.raises(ValueError):
+            world.LiveConverter(sample_rate, context_ms=30.0, f0_min=60.0)
+
+    def test_it_reports_a_latency_the_caller_can_act_on(self, sample_rate):
+        live = world.LiveConverter(sample_rate, hop_ms=80.0, context_ms=80.0)
+        assert live.latency_ms == pytest.approx(160.0, abs=1.0)
+        assert live.latency_samples == int(0.16 * sample_rate)
+
+    def test_reset_clears_it(self, utterance, sample_rate):
+        audio, _ = utterance
+        live = world.LiveConverter(sample_rate, pitch_semitones=7.0)
+        first = np.concatenate([live.process(audio[i:i + 256])
+                                for i in range(0, 48000, 256)])
+        live.reset()
+        again = np.concatenate([live.process(audio[i:i + 256])
+                                for i in range(0, 48000, 256)])
+        assert np.allclose(first, again)
+
+    def test_block_size_does_not_change_the_answer(self, utterance, sample_rate):
+        audio, _ = utterance
+        outs = []
+        for block in (128, 512):
+            live = world.LiveConverter(sample_rate, pitch_semitones=7.0)
+            y = np.concatenate([live.process(audio[i:i + block])
+                                for i in range(0, audio.size, block)])
+            outs.append(y[live.latency_samples:live.latency_samples + 40000])
+        assert np.allclose(outs[0], outs[1], atol=1e-9)

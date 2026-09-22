@@ -572,3 +572,53 @@ class TestExplainingTheSound:
         assert window.why in window._needs_audio
         assert not window.why.isEnabled()
         assert "Start" in window.why.toolTip()
+
+
+class TestChoosingTheEngine:
+    """Two engines with different delays, and a window that has to say so."""
+
+    def test_it_starts_on_the_faithful_one(self, window):
+        assert window.method.currentData() == "psola"
+
+    def test_both_are_offered_with_their_cost_in_the_label(self, window):
+        labels = [window.method.itemText(i) for i in range(window.method.count())]
+        assert any("60 ms" in t for t in labels)
+        assert any("160 ms" in t for t in labels)
+        assert any("singing" in t for t in labels)
+
+    def test_choosing_one_sets_it_and_says_what_it_is(self, window):
+        pytest.importorskip("pyworld")
+        window.method.setCurrentIndex(window.method.findData("world"))
+        assert window.studio.settings.method == "world"
+        assert "sung note" in window.status.text()
+
+    def test_switching_while_running_restarts_the_audio(self, window):
+        """Swapping engines under a live stream would move the delay by a
+        tenth of a second mid-sentence."""
+        pytest.importorskip("pyworld")
+        window.start()
+        pump(0.4)
+        assert window.studio.running
+        window.method.setCurrentIndex(window.method.findData("world"))
+        pump(0.4)
+        assert window.studio.running, "it has to come back up"
+        assert window.studio.settings.method == "world"
+        window.stop()
+
+    def test_choosing_the_same_one_is_not_a_restart(self, window):
+        window.start()
+        pump(0.3)
+        converter = window.studio._metered.converter
+        window.method.setCurrentIndex(window.method.findData("psola"))
+        assert window.studio._metered.converter is converter
+        window.stop()
+
+    def test_a_build_without_the_vocoder_says_so_and_stays_put(
+            self, window, monkeypatch):
+        from natvox.dsp import world
+
+        monkeypatch.setattr(world, "available", lambda: False)
+        window.method.setCurrentIndex(window.method.findData("world"))
+        assert window.studio.settings.method == "psola"
+        assert window.method.currentData() == "psola"
+        assert "pyworld" in window.status.text()

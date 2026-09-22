@@ -218,7 +218,11 @@ def cmd_live(args) -> int:
 
     profile = _profile_from_args(args)
     _warn(profile)
-    changer = VoiceChanger(args.rate, profile)
+    try:
+        changer = _live_converter(args, profile)
+    except (ValueError, ImportError, RuntimeError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     processor = StreamProcessor(changer, channels=args.channels, dry_wet=args.dry_wet)
     input_device = _device_arg(args.input_device)
     output_device = _device_arg(args.output_device)
@@ -251,6 +255,23 @@ def cmd_live(args) -> int:
     finally:
         print(processor.stats.summary(), file=sys.stderr)
     return 0
+
+
+def _live_converter(args, profile):
+    """The engine the live path will hold: PSOLA by default, or the vocoder.
+
+    The two have the same interface on purpose, so the callback does not know
+    or care which one it is holding.
+    """
+    if getattr(args, "method", "psola") != "world":
+        return VoiceChanger(args.rate, profile)
+
+    from .dsp.world import LiveConverter
+
+    return LiveConverter(args.rate, pitch_semitones=profile.pitch_semitones,
+                         formant_semitones=profile.formant_semitones,
+                         breathiness=profile.breathiness,
+                         f0_min=profile.f0_min, f0_max=profile.f0_max)
 
 
 def cmd_serve(args) -> int:
@@ -598,6 +619,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     live = sub.add_parser("live", help="convert the microphone in real time")
     _add_device_options(live)
+    live.add_argument("--method", choices=("psola", "world"), default="psola",
+                      help="psola is 60 ms of delay and the more faithful "
+                           "below about 8 semitones; world is 160 ms and the "
+                           "only one that holds together above that, or when "
+                           "the voice is sung")
     live.add_argument("--channels", type=int, default=1, help="output channels")
     live.add_argument("--dry-wet", type=float, default=1.0,
                       help="1.0 is fully converted, 0.0 is the delayed original")
