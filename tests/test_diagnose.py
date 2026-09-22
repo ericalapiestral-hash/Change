@@ -26,7 +26,8 @@ def report(**over):
                 quiet_db=-73.8, clipped_samples=0, dc_offset=0.0,
                 band_levels=(0.0, -3.0, -14.0, -20.0, -11.0),
                 voiced_share=0.71, median_hz=110.0,
-                octave_jumps_per_s=0.0, voicing_flips_per_s=3.4,
+                octave_jumps_per_s=0.0, octave_jumps=0,
+                voicing_flips_per_s=3.4,
                 median_step_st=0.09, p95_step_st=0.26)
     base.update(over)
     r = diagnose.Report(**base)
@@ -131,7 +132,7 @@ class TestWhatItComplainsAbout:
         assert any("reads as voiced" in note for note in r.complaints)
 
     def test_octave_jumps(self):
-        r = report(octave_jumps_per_s=2.0)
+        r = report(octave_jumps_per_s=2.0, octave_jumps=20)
         note = next(n for n in r.complaints if "octave" in n)
         assert "robotic" in note
 
@@ -141,10 +142,10 @@ class TestWhatItComplainsAbout:
 
     def test_a_threshold_is_a_threshold(self):
         """Just under each limit says nothing; just over says one thing."""
-        assert report(octave_jumps_per_s=diagnose.JUMPS_COMPLAINT_PER_S
-                      - 0.01).complaints == []
-        assert len(report(octave_jumps_per_s=diagnose.JUMPS_COMPLAINT_PER_S
-                          + 0.01).complaints) == 1
+        assert report(octave_jumps_per_s=diagnose.JUMPS_COMPLAINT_PER_S - 0.01,
+                      octave_jumps=20).complaints == []
+        assert len(report(octave_jumps_per_s=diagnose.JUMPS_COMPLAINT_PER_S + 0.01,
+                          octave_jumps=20).complaints) == 1
 
 
 class TestWhereTheEnergyIs:
@@ -296,7 +297,8 @@ class TestComparingTwoRecordings:
         assert "+3.3 st" in text
 
     def test_octave_jumps_the_engine_invented(self):
-        text = diagnose.compare(report(), report(octave_jumps_per_s=2.0))
+        text = diagnose.compare(report(),
+                                report(octave_jumps_per_s=2.0, octave_jumps=20))
         assert "the engine is doing wrong" in text
         assert "robotic sound itself" in text
 
@@ -310,7 +312,7 @@ class TestComparingTwoRecordings:
 
     def test_resynthesis_alone_is_not_an_accusation(self):
         """The engine rebuilds the pitch track; the two never measure alike."""
-        after = report(median_hz=162.0, median_step_st=0.08,
+        after = report(median_hz=186.0, median_step_st=0.08,
                        voiced_share=0.68,
                        band_levels=(0.0, -3.0, -13.0, -18.0, -10.0))
         assert "not adding instability" in diagnose.compare(report(), after)
@@ -339,7 +341,7 @@ class TestTheSummaryIsReadable:
         assert "on its own" in text
 
     def test_complaints_are_listed_under_a_heading(self):
-        text = report(octave_jumps_per_s=3.0).summary()
+        text = report(octave_jumps_per_s=3.0, octave_jumps=30).summary()
         assert "what looks wrong" in text
         assert "* the pitch tracker jumps" in text
 
@@ -362,8 +364,9 @@ class TestTheBlindSpotARealRecordingFound:
     """
 
     def test_the_real_numbers_are_now_a_complaint(self):
-        text = diagnose.compare(report(octave_jumps_per_s=0.12),
-                                report(octave_jumps_per_s=0.47, median_hz=174.0))
+        text = diagnose.compare(
+            report(octave_jumps_per_s=0.12, octave_jumps=3),
+            report(octave_jumps_per_s=0.47, octave_jumps=12, median_hz=174.0))
         assert "the engine is doing wrong" in text
         assert "0.35 octave jumps" in text
 
@@ -372,17 +375,62 @@ class TestTheBlindSpotARealRecordingFound:
 
     def test_a_ratio_on_a_base_of_nearly_nothing_is_not_enough(self):
         """0.02 -> 0.06 is three times as many and still inaudible."""
-        text = diagnose.compare(report(octave_jumps_per_s=0.02),
-                                report(octave_jumps_per_s=0.06))
+        text = diagnose.compare(
+            report(octave_jumps_per_s=0.02, octave_jumps=2),
+            report(octave_jumps_per_s=0.06, octave_jumps=9))
         assert "doing wrong" not in text
 
     def test_the_engine_passing_them_through_is_not_the_engine_inventing_them(self):
-        text = diagnose.compare(report(octave_jumps_per_s=0.40),
-                                report(octave_jumps_per_s=0.45))
+        text = diagnose.compare(
+            report(octave_jumps_per_s=0.40, octave_jumps=10),
+            report(octave_jumps_per_s=0.45, octave_jumps=11))
         assert "doing wrong" not in text
 
     def test_the_engine_removing_them_is_never_a_complaint(self):
         """What the same microphone did on its better day: 0.10 -> 0.00."""
-        text = diagnose.compare(report(octave_jumps_per_s=0.10),
-                                report(octave_jumps_per_s=0.0))
+        text = diagnose.compare(
+            report(octave_jumps_per_s=0.10, octave_jumps=1),
+            report(octave_jumps_per_s=0.0, octave_jumps=0))
         assert "doing wrong" not in text
+
+
+class TestLandingShortOfFemale:
+    """The thing most likely to be the whole answer, and not a defect.
+
+    A preset is a fixed interval rather than a destination: +7 semitones took
+    a real 104 Hz speaker to 155 Hz, and a voice is heard as male or
+    ambiguous below about 165.  Every artifact metric was clean, the
+    conversion did exactly what it was asked, and the result still sounded
+    like a man.
+    """
+
+    def test_the_real_recording_is_told_it_landed_short(self):
+        text = diagnose.compare(report(median_hz=104.0),
+                                report(median_hz=155.0))
+        assert "155 Hz" in text
+        assert "Fit it to my voice" in text
+
+    def test_it_is_not_filed_as_the_engine_doing_something_wrong(self):
+        text = diagnose.compare(report(median_hz=104.0),
+                                report(median_hz=155.0))
+        assert "worth knowing" in text
+        assert "the engine is doing wrong" not in text
+
+    def test_clearing_the_crossover_says_nothing(self):
+        text = diagnose.compare(report(median_hz=104.0),
+                                report(median_hz=186.0))
+        assert "heard as male" not in text
+
+    def test_it_stays_quiet_when_nobody_asked_to_go_up(self):
+        """Nothing is landing short if the point was to go down."""
+        text = diagnose.compare(report(median_hz=200.0),
+                                report(median_hz=130.0))
+        assert "heard as male" not in text
+
+    def test_a_dull_recording_is_named_as_the_other_half(self):
+        after = report(median_hz=186.0,
+                       band_levels=(0.0, -4.0, -12.0, -29.0, -30.0))
+        text = diagnose.compare(report(median_hz=104.0), after)
+        assert "F2, F3 and the consonants" in text
+        assert "closer to the microphone" in text
+        assert "no setting here can" in text

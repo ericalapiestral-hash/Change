@@ -442,6 +442,42 @@ demoted: it reads identically to full band, and the docstring it replaced
 asserted such a device would "land near 8" kHz. It does not, and nothing had
 ever checked.
 
+#### What the first real recording said
+
+Every number above this line came from a synthesiser. The first recording of
+an actual person arrived late, and it moved three things.
+
+**It landed short, and that was most of the complaint.** The speaker measured
+104 Hz. The `female` preset is +7 semitones, so it came out at **155 Hz** — and
+a voice is heard as male or ambiguous below about 165. Every artifact metric
+was clean, the engine did exactly what it was asked, and the result sounded
+like a man, because it was one. `--tune` asks for +10 st on that voice and
+lands at 186. A preset is an interval; a voice needs a destination. The
+diagnosis says so now, at the moment somebody is looking at it.
+
+**The 2–4 kHz band was 9 dB weaker than the reference — but not cut off.** The
+spectrum ran smoothly to 23 kHz with no cliff anywhere, so no codec and no
+device limit. What it did show is the cue band sitting only **12 dB above the
+room**, against 32 dB for the reference: the consonants and the upper formants
+are there and buried. That is distance from the microphone and a quiet talker,
+and no setting in this program can put them back.
+
+**And the octave-jump rate turned out not to be evidence.** A pitch sweep over
+that recording read 0.21, 0.42, 0.10, 0.42, 0.52, 0.31, 0.52, 0.42 jumps per
+second at +4 through +12 semitones. That reads as a threshold somewhere around
++8 — and it is eight draws from the same hat. On ten seconds of speech those
+rates are **one to five events**, and Poisson noise alone spans 0–3 and 0–9.
+The rate is a count of rare events with a duration underneath it, and it had
+been quoted to three decimal places in two directions: first the tool missed a
+0.12 → 0.47 increase, then the margin added to catch that would have fired on
+nothing at all. It now prints the count beside the rate, says when there are
+too few to judge, and says how long to record instead.
+
+That is three findings from one file, and none of them was reachable from
+synthetic signals — the first two because a synthesiser is not a person in a
+room, the third because a synthesiser gives exactly zero and a statistic that
+is only ever exercised at zero is never tested where it is used.
+
 ### More than pitch and formants
 
 `male_to_female` moves pitch and vocal-tract size and nothing else. That is the

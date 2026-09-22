@@ -137,10 +137,23 @@ class Report:
     voiced_share: float
     median_hz: float
     octave_jumps_per_s: float
+    #: The count behind the rate. A rate without it cannot be judged.
+    octave_jumps: int
     voicing_flips_per_s: float
     median_step_st: float
     p95_step_st: float
     complaints: list[str] = field(default_factory=list)
+
+    @property
+    def enough_jumps_to_judge(self) -> bool:
+        """Whether there are enough octave jumps for the rate to be evidence."""
+        return self.octave_jumps >= MIN_JUMPS_TO_JUDGE
+
+    def seconds_to_judge(self) -> float:
+        """How long a recording would have to be for the rate to be evidence."""
+        if self.octave_jumps_per_s <= 0:
+            return 0.0
+        return MIN_JUMPS_TO_JUDGE / self.octave_jumps_per_s
 
     @property
     def cue_band_db(self) -> float:
@@ -183,7 +196,10 @@ class Report:
             f"  voiced          {self.voiced_share:6.0%} of frames",
             f"  median pitch    {self.median_hz:6.0f} Hz",
             f"  octave jumps    {self.octave_jumps_per_s:6.2f} per second "
-            f"  (clean: {CLEAN_OCTAVE_JUMPS_PER_S:.2f})",
+            f"  ({self.octave_jumps} of them"
+            + ("" if self.enough_jumps_to_judge
+               else f"; {MIN_JUMPS_TO_JUDGE} needed to mean anything")
+            + f", clean: {CLEAN_OCTAVE_JUMPS_PER_S:.2f})",
             f"  voicing flips   {self.voicing_flips_per_s:6.2f} per second "
             f"  (clean: {CLEAN_FLIPS_PER_S:.1f})",
             f"  frame to frame  {self.median_step_st:6.2f} st median, "
@@ -262,6 +278,7 @@ def look(audio, sample_rate: int, hop_ms: float = HOP_MS) -> Report:
         voiced_share=float(voiced.mean()) if voiced.size else 0.0,
         median_hz=float(np.median(heard)) if heard.size else 0.0,
         octave_jumps_per_s=jumps / tracked_s if tracked_s else 0.0,
+        octave_jumps=jumps,
         voicing_flips_per_s=flips / tracked_s if tracked_s else 0.0,
         median_step_st=float(np.median(steps)) if steps.size else 0.0,
         p95_step_st=float(np.percentile(steps, 95)) if steps.size else 0.0,
@@ -289,6 +306,28 @@ ADDED_JUMPS_PER_S = 0.5
 #: 0.00 too, so anything it puts out above this floor it invented.
 INVENTED_JUMPS_PER_S = 0.25
 INVENTED_JUMPS_RATIO = 2.0
+
+#: How many octave jumps must actually occur before the rate means anything.
+#:
+#: The rate is a count of rare events divided by a duration, and on ten
+#: seconds of speech the counts are tiny: 0.10/s is **one** jump and 0.52/s is
+#: **five**.  Poisson noise alone spans 0 to 3 and 0 to 9 respectively, so
+#: those two rates do not differ.  A pitch sweep over one real recording read
+#: 0.21, 0.42, 0.10, 0.42, 0.52, 0.31, 0.52, 0.42 at +4 through +12
+#: semitones, which is not a trend -- it is eight draws from the same hat, and
+#: it was nearly reported as "the engine breaks above +8".
+#:
+#: Eight events is where the 95% Poisson range stops touching zero.  Below
+#: that this says so rather than guessing, and says how long to record.
+MIN_JUMPS_TO_JUDGE = 8
+
+#: Where a raised voice stops being heard as male.
+#:
+#: The literature puts the crossover around 155-180 Hz.  Below it, a voice is
+#: heard as male or ambiguous whatever else was done to it -- which is a thing
+#: worth saying out loud, because the shipped presets are fixed intervals and
+#: +7 semitones lands a 104 Hz speaker at 155.
+CROSSOVER_HZ = 165.0
 ADDED_STEP_ST = 0.15
 ADDED_FLIPS_PER_S = 4.0
 
@@ -321,7 +360,8 @@ def compare(before: Report, after: Report) -> str:
         "",
     ]
     added = []
-    if (after.octave_jumps_per_s - before.octave_jumps_per_s > ADDED_JUMPS_PER_S
+    if after.enough_jumps_to_judge and (
+            after.octave_jumps_per_s - before.octave_jumps_per_s > ADDED_JUMPS_PER_S
             or (after.octave_jumps_per_s > INVENTED_JUMPS_PER_S
                 and after.octave_jumps_per_s
                 > before.octave_jumps_per_s * INVENTED_JUMPS_RATIO)):
@@ -340,9 +380,37 @@ def compare(before: Report, after: Report) -> str:
             "the voiced/unvoiced decision changes far more often on the way "
             "out, which switches the converted and untouched paths in and out "
             "mid-word.")
-    if added:
+    faults, added = added, []
+    # Not faults, and the first is the thing most likely to be the whole
+    # answer: the
+    # shipped presets are fixed intervals, so a low voice raised by one of
+    # them can come out sounding exactly as male as it went in.
+    if shift > 1.0 and 0 < after.median_hz < CROSSOVER_HZ:
+        added.append(
+            f"it lands at {after.median_hz:.0f} Hz, and a voice is heard as "
+            f"male or ambiguous below about {CROSSOVER_HZ:.0f}. That is not a "
+            "defect in the conversion -- it is the conversion being asked for "
+            "too little. A preset is a fixed interval rather than a "
+            "destination, so it lands a low voice short; Fit it to my voice "
+            "measures the speaker and asks for what actually reaches a "
+            "female pitch.")
+    if after.cue_band_db < CUE_BAND_FLOOR_DB + 5:
+        added.append(
+            f"the {_band_name(CUE_BAND)}Hz band is {after.cue_band_db:.0f} dB "
+            "down, where F2, F3 and the consonants live. Pitch is the first "
+            "cue the ear uses and those are the next, so a voice this dull "
+            "reads as muffled rather than female however far the pitch goes. "
+            "Getting closer to the microphone puts them back; no setting "
+            "here can.")
+    if faults:
         lines.append("what the engine is doing wrong")
+        lines.extend(f"  * {note}" for note in faults)
+        lines.append("")
+    if added:
+        lines.append("worth knowing")
         lines.extend(f"  * {note}" for note in added)
+    elif faults:
+        pass
     elif before.complaints:
         lines.append("the engine is not adding instability: it is passing the "
                      "recording's own\nproblems through. Fix those first.")
@@ -395,7 +463,7 @@ def _complaints(r: Report) -> list[str]:
             f"{r.clipped_samples} samples are at the rail. Whatever clipped "
             "happened before this program saw it, and nothing downstream can "
             "undo it -- turn the microphone's input level down.")
-    if r.octave_jumps_per_s > JUMPS_COMPLAINT_PER_S:
+    if r.octave_jumps_per_s > JUMPS_COMPLAINT_PER_S and r.enough_jumps_to_judge:
         notes.append(
             f"the pitch tracker jumps an octave {r.octave_jumps_per_s:.1f} "
             "times a second, and a clean recording gives none at all. Each "
