@@ -24,7 +24,8 @@ def report(**over):
     """A Report with the clean reference's numbers, and its complaints."""
     base = dict(sample_rate=48000, seconds=2.4, peak_db=-6.0, speech_db=-17.8,
                 quiet_db=-73.8, clipped_samples=0, dc_offset=0.0,
-                band_hz=4400.0, voiced_share=0.71, median_hz=110.0,
+                band_levels=(0.0, -3.0, -14.0, -20.0, -11.0),
+                voiced_share=0.71, median_hz=110.0,
                 octave_jumps_per_s=0.0, voicing_flips_per_s=3.4,
                 median_step_st=0.09, p95_step_st=0.26)
     base.update(over)
@@ -146,47 +147,71 @@ class TestWhatItComplainsAbout:
                           + 0.01).complaints) == 1
 
 
-class TestTheBandNumberCarriesNoVerdict:
-    """It describes; it does not accuse.
+class TestWhereTheEnergyIs:
+    """A single number here was wrong, and nearly carried a verdict.
 
-    Two rules were tried here -- an absolute edge, then a cliff detector --
-    and both called the clean reference band-limited, because a voice really
-    does have almost nothing above 5 kHz.  The number stayed; the verdict
-    went.
+    "The frequency below which 99.5% of the energy sits" rests on the last
+    half percent of it, which is the part a filter's skirt, a noise floor and
+    a resampler each disagree about: one utterance band-limited to 3.4 kHz
+    read 1734 Hz kept at 48 kHz and 3734 Hz resampled to 8 kHz.  Band levels
+    are sums over wide ranges, so nothing hinges on a tail.
     """
 
-    def test_a_16_khz_device_shows_a_lower_rolloff(self, utterance, sample_rate):
+    @staticmethod
+    def low_passed(audio, cut, sample_rate):
+        from scipy import signal
+
+        sos = signal.butter(8, cut / (sample_rate / 2), btype="low", output="sos")
+        return signal.sosfilt(sos, audio)
+
+    def test_the_reference_reads_what_the_table_says(self, utterance, sample_rate):
+        audio, _ = utterance
+        levels = diagnose.look(audio, sample_rate).band_levels
+        assert levels == pytest.approx((0, -3, -14, -20, -11), abs=1.5)
+
+    def test_one_signal_reads_the_same_at_two_sample_rates(self, utterance,
+                                                           sample_rate):
+        """The failure that retired the old number, held to directly."""
         from scipy import signal
 
         audio, _ = utterance
-        narrow = signal.resample_poly(audio, 1, 3)
         wide = diagnose.look(audio, sample_rate)
-        thin = diagnose.look(narrow, sample_rate // 3)
-        assert thin.band_hz < sample_rate // 6        # below its own Nyquist
-        assert thin.band_hz < wide.band_hz + 500
+        resampled = diagnose.look(signal.resample_poly(audio, 1, 3),
+                                  sample_rate // 3)
+        # The top band is gone at 16 kHz; everything the rate still carries
+        # has to agree, which is what the old number could not manage.
+        assert resampled.band_levels[:4] == pytest.approx(wide.band_levels[:4],
+                                                          abs=2.0)
+        assert resampled.cue_band_db == pytest.approx(wide.cue_band_db, abs=2.0)
 
-    def test_a_telephone_band_shows_a_lower_one_still(self, utterance, sample_rate):
-        from scipy import signal
-
+    def test_a_telephone_band_still_carries_a_voice(self, utterance, sample_rate):
         audio, _ = utterance
-        phone = signal.resample_poly(audio, 1, 6)
-        assert diagnose.look(phone, sample_rate // 6).band_hz < 4000
+        r = diagnose.look(self.low_passed(audio, 3400, sample_rate), sample_rate)
+        assert r.cue_band_db > diagnose.CUE_BAND_FLOOR_DB
+        assert r.complaints == [], "a telephone line is narrow, not broken"
 
-    @pytest.mark.parametrize("divisor", [1, 3, 6])
-    def test_none_of_them_is_complained_about(self, utterance, sample_rate,
-                                              divisor):
-        from scipy import signal
-
+    def test_narrower_than_a_telephone_is_complained_about(self, utterance,
+                                                           sample_rate):
+        """What a real microphone turned out to be doing."""
         audio, _ = utterance
-        if divisor > 1:
-            audio = signal.resample_poly(audio, 1, divisor)
-        r = diagnose.look(audio, sample_rate // divisor)
-        assert r.band_hz > 0
-        assert r.complaints == []
+        r = diagnose.look(self.low_passed(audio, 2000, sample_rate), sample_rate)
+        assert r.cue_band_db < diagnose.CUE_BAND_FLOOR_DB
+        note = next(n for n in r.complaints if "cue" in n or "band" in n)
+        assert "sound female" in note
+        assert "before this program" in note, "it is not the engine's fault"
 
-    def test_the_summary_says_so_out_loud(self, utterance, sample_rate):
-        audio, _ = utterance
-        assert "no verdict attached" in diagnose.look(audio, sample_rate).summary()
+    def test_the_cue_band_is_where_the_female_cue_lives(self):
+        assert diagnose.CUE_BAND in diagnose.BANDS
+        assert diagnose.CUE_BAND == (2000, 4000), "F2, F3 and the fricatives"
+
+    def test_the_summary_prints_every_band(self, utterance, sample_rate):
+        text = diagnose.look(audio_of(utterance), sample_rate).summary()
+        for band in diagnose.BANDS:
+            assert diagnose._band_name(band) in text       # noqa: SLF001
+
+
+def audio_of(utterance):
+    return utterance[0]
 
 
 class TestItSurvivesWhateverItIsPointedAt:
@@ -286,7 +311,8 @@ class TestComparingTwoRecordings:
     def test_resynthesis_alone_is_not_an_accusation(self):
         """The engine rebuilds the pitch track; the two never measure alike."""
         after = report(median_hz=162.0, median_step_st=0.08,
-                       voiced_share=0.68, band_hz=5200.0)
+                       voiced_share=0.68,
+                       band_levels=(0.0, -3.0, -13.0, -18.0, -10.0))
         assert "not adding instability" in diagnose.compare(report(), after)
 
     def test_a_bad_recording_passed_through_blames_the_recording(self):
@@ -325,3 +351,38 @@ class TestTheSummaryIsReadable:
 
     def test_clipping_is_counted_in_the_level_line(self):
         assert "9000 samples at the rail" in report(clipped_samples=9000).summary()
+
+
+class TestTheBlindSpotARealRecordingFound:
+    """0.12 -> 0.47 octave jumps a second, and this reported no fault.
+
+    Four times as many, one every two seconds, audible -- and the bare
+    difference, 0.35, sat under the margin allowed for resynthesis.  A margin
+    calibrated on a base of zero says nothing about a base that is not zero.
+    """
+
+    def test_the_real_numbers_are_now_a_complaint(self):
+        text = diagnose.compare(report(octave_jumps_per_s=0.12),
+                                report(octave_jumps_per_s=0.47, median_hz=174.0))
+        assert "the engine is doing wrong" in text
+        assert "0.35 octave jumps" in text
+
+    def test_the_bare_difference_alone_would_have_missed_it(self):
+        assert 0.47 - 0.12 < diagnose.ADDED_JUMPS_PER_S
+
+    def test_a_ratio_on_a_base_of_nearly_nothing_is_not_enough(self):
+        """0.02 -> 0.06 is three times as many and still inaudible."""
+        text = diagnose.compare(report(octave_jumps_per_s=0.02),
+                                report(octave_jumps_per_s=0.06))
+        assert "doing wrong" not in text
+
+    def test_the_engine_passing_them_through_is_not_the_engine_inventing_them(self):
+        text = diagnose.compare(report(octave_jumps_per_s=0.40),
+                                report(octave_jumps_per_s=0.45))
+        assert "doing wrong" not in text
+
+    def test_the_engine_removing_them_is_never_a_complaint(self):
+        """What the same microphone did on its better day: 0.10 -> 0.00."""
+        text = diagnose.compare(report(octave_jumps_per_s=0.10),
+                                report(octave_jumps_per_s=0.0))
+        assert "doing wrong" not in text

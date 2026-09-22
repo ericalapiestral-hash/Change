@@ -377,7 +377,9 @@ the recording
   peak              -6.0 dBFS
   speech           -17.8 dBFS
   the quiet bits   -73.8 dBFS   (56 dB below the speech)
-  energy up to       4.4 kHz   (99.5% of it; no verdict attached)
+  where the energy is, in dB below its loudest band
+    0.1-0.5k  0.5-1k    1-2k    2-4k    4-8k
+         0      -3     -14     -20     -11
 
 the pitch tracker, on this recording
   voiced             71% of frames
@@ -408,12 +410,37 @@ Did the microphone hand the engine something already unstable, or did the
 engine make it so? Only the second is fixable here, and until this existed
 there was no way to tell them apart without a listener in the room.
 
-The band number deliberately carries no verdict. Two rules were tried — an
-absolute edge, then a cliff detector — and both called the known-good reference
-band-limited, because a voice really does have almost nothing above 5 kHz. A
-diagnostic that cries wolf on the clean case is one nobody finishes reading, so
-the number stayed and the verdict went; compare it against another recording
-from the same machine instead.
+**The 2–4 kHz band is the other number to read**, and it took three tries to
+measure it honestly. F2, F3 and every fricative live there, and they are what
+the ear uses after pitch — so a recording with nothing in that band cannot be
+made to sound female however far the pitch is moved, and the formant shift has
+nothing left to act on.
+
+The first two attempts at a verdict — an absolute edge, then a cliff detector —
+called the known-good reference band-limited, because a voice really does have
+little above 5 kHz. The third was worse: *the frequency below which 99.5% of
+the energy sits* looked descriptive and safe, and it is not a measurement at
+all. It rests on the last half percent of the energy, which is precisely the
+part a filter's skirt, a noise floor and a resampler disagree about. One
+utterance band-limited to 3.4 kHz read **1734 Hz kept at 48 kHz and 3734 Hz
+resampled to 8 kHz** — two answers two octaves apart for one signal. It shipped
+with "no verdict attached" and was quoted at somebody anyway.
+
+Band levels have no tail to hinge on, because each is a sum over a wide range:
+
+| signal | 0.1–0.5k | 0.5–1k | 1–2k | 2–4k | 4–8k |
+|---|---|---|---|---|---|
+| full band | 0 | −3 | −14 | **−20** | −11 |
+| a telephone line (3.4 kHz) | 0 | −3 | −14 | **−24** | −26 |
+| low-passed to 2 kHz | 0 | −3 | −14 | **−37** | −64 |
+| a 16 kHz device | 0 | −4 | −15 | **−20** | −10 |
+| an 8 kHz device | 0 | −5 | −17 | **−19** | −45 |
+
+A voice and a telephone line both carry the cue band; below −30 dB it is gone.
+The 16 kHz row is why the old number had to be retired rather than merely
+demoted: it reads identically to full band, and the docstring it replaced
+asserted such a device would "land near 8" kHz. It does not, and nothing had
+ever checked.
 
 ### More than pitch and formants
 

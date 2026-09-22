@@ -75,20 +75,48 @@ FLIPS_COMPLAINT_PER_S = 8.0
 #: level measurements stop meaning anything and so does the tracker.
 QUIET_HEADROOM_DB = 20.0
 
-#: Share of the energy that :attr:`Report.band_hz` sits below.
+#: Where the voice's energy sits, in named bands.
 #:
-#: Reported without a verdict attached, deliberately.  Telling a band limit
-#: from a voice needs a threshold, and there is nothing here to set one with:
-#: this repository's only known-good recording is synthetic and has almost
-#: nothing above 4.8 kHz, so every rule tried against it -- an absolute edge,
-#: then a cliff detector -- called known-good audio band-limited.  A
-#: diagnostic that cries wolf on the clean case is one nobody finishes
-#: reading.
+#: This replaced a single number -- the frequency below which 99.5% of the
+#: energy sat -- which turned out not to be trustworthy.  That statistic rests
+#: on the last half percent of the energy, which is precisely the part a
+#: filter's skirt, a noise floor and a resampler disagree about: the same
+#: utterance band-limited to 3.4 kHz read **1734 Hz kept at 48 kHz and 3734 Hz
+#: resampled to 8 kHz**.  Two answers two octaves apart for one signal is not a
+#: measurement, and a verdict was nearly attached to it.
 #:
-#: So it is a number to compare against another recording, and it becomes a
-#: verdict when there is a real recording to calibrate on.  A device running
-#: at 16 kHz and claiming 48 lands near 8; a telephone band near 3.4.
-BAND_SHARE = 0.995
+#: Band levels do not have that problem, because each one is a sum over a wide
+#: range rather than the position of a tail.  Measured on the reference
+#: utterance, in dB below its loudest band:
+#:
+#: =====================  ========  ======  ====  ====  ====
+#: signal                 0.1-0.5k  0.5-1k  1-2k  2-4k  4-8k
+#: =====================  ========  ======  ====  ====  ====
+#: full band                     0      -3   -14   -20   -11
+#: low-passed to 3.4 kHz         0      -3   -14   -24   -26
+#: low-passed to 2 kHz           0      -3   -14   -37   -64
+#: a 16 kHz device               0      -4   -15   -20   -10
+#: an 8 kHz device               0      -5   -17   -19   -45
+#: =====================  ========  ======  ====  ====  ====
+#:
+#: The 16 kHz row is why the old number had to go: it reads identically to
+#: full band here, and the docstring it replaced claimed such a device would
+#: "land near 8" kHz.  It does not, and nothing had ever checked.
+BANDS = ((100, 500), (500, 1000), (1000, 2000), (2000, 4000), (4000, 8000))
+
+#: The band that decides whether a converted voice reads as female.
+#:
+#: F2 and F3 live here, and so does every fricative and stop release.  A
+#: shorter vocal tract moves them up, which is the cue the ear uses after
+#: pitch -- so a formant shift applied to a recording with nothing in this
+#: band delivers nothing, however correctly it is computed.
+CUE_BAND = (2000, 4000)
+
+#: How far the cue band may sit below the loudest band before it is gone.
+#:
+#: The reference reads -20 dB and a telephone line -24, both of which carry a
+#: voice.  Low-passed to 2 kHz it reads -37 and does not.
+CUE_BAND_FLOOR_DB = -30.0
 
 
 @dataclass
@@ -103,9 +131,8 @@ class Report:
     quiet_db: float
     clipped_samples: int
     dc_offset: float
-    #: Frequency below which nearly all the energy sits, in Hz.  Descriptive
-    #: only -- see :data:`BAND_SHARE`.
-    band_hz: float
+    #: Energy in each of :data:`BANDS`, in dB below the loudest of them.
+    band_levels: tuple
     #: Pitch tracking, on this recording.
     voiced_share: float
     median_hz: float
@@ -114,6 +141,16 @@ class Report:
     median_step_st: float
     p95_step_st: float
     complaints: list[str] = field(default_factory=list)
+
+    @property
+    def cue_band_db(self) -> float:
+        """How far :data:`CUE_BAND` sits below the loudest band."""
+        return self.band_levels[BANDS.index(CUE_BAND)]
+
+    def band_table(self) -> str:
+        names = "  ".join(f"{_band_name(b):>6s}" for b in BANDS)
+        values = "  ".join(f"{v:6.0f}" for v in self.band_levels)
+        return names + "\n    " + values
 
     @property
     def headroom_db(self) -> float:
@@ -138,8 +175,8 @@ class Report:
             f"  speech          {self.speech_db:6.1f} dBFS",
             f"  the quiet bits  {self.quiet_db:6.1f} dBFS"
             f"   ({self.headroom_db:.0f} dB below the speech)",
-            f"  energy up to    {self.band_hz / 1000:6.1f} kHz"
-            f"   ({BAND_SHARE:.1%} of it; no verdict attached)",
+            "  where the energy is, in dB below its loudest band",
+            "    " + self.band_table(),
             f"  DC offset       {self.dc_offset:6.4f}",
             "",
             "the pitch tracker, on this recording",
@@ -193,7 +230,7 @@ def look(audio, sample_rate: int, hop_ms: float = HOP_MS) -> Report:
     clipped = int(np.count_nonzero(np.abs(audio) >= 0.999))
     dc = float(np.mean(audio)) if audio.size else 0.0
 
-    band_hz = _rolloff(audio, sample_rate)
+    band_levels = _band_levels(audio, sample_rate)
 
     # A telephone-band recording has no room for an 800 Hz ceiling; keep the
     # tracker inside the band it was actually given rather than refusing to
@@ -221,7 +258,7 @@ def look(audio, sample_rate: int, hop_ms: float = HOP_MS) -> Report:
     report = Report(
         sample_rate=sample_rate, seconds=seconds,
         peak_db=peak_db, speech_db=speech_db, quiet_db=quiet_db,
-        clipped_samples=clipped, dc_offset=dc, band_hz=band_hz,
+        clipped_samples=clipped, dc_offset=dc, band_levels=band_levels,
         voiced_share=float(voiced.mean()) if voiced.size else 0.0,
         median_hz=float(np.median(heard)) if heard.size else 0.0,
         octave_jumps_per_s=jumps / tracked_s if tracked_s else 0.0,
@@ -242,6 +279,16 @@ def look(audio, sample_rate: int, hop_ms: float = HOP_MS) -> Report:
 #: had none, and 0.15 semitones is more frame-to-frame wobble than the whole
 #: clean reference has.
 ADDED_JUMPS_PER_S = 0.5
+
+#: ...but a bare difference misses a fourfold increase from a low base.
+#:
+#: A real recording went 0.12 to 0.47 jumps a second through the engine --
+#: four times as many, one every two seconds, audible -- and the difference,
+#: 0.35, sat under the margin above, so this reported no fault.  The engine
+#: passes the clean reference at 0.00 and passes it band-limited and noisy at
+#: 0.00 too, so anything it puts out above this floor it invented.
+INVENTED_JUMPS_PER_S = 0.25
+INVENTED_JUMPS_RATIO = 2.0
 ADDED_STEP_ST = 0.15
 ADDED_FLIPS_PER_S = 4.0
 
@@ -269,14 +316,17 @@ def compare(before: Report, after: Report) -> str:
         f"{after.voicing_flips_per_s:5.2f} per second",
         f"  voiced          {before.voiced_share:5.0%} -> "
         f"{after.voiced_share:5.0%} of frames",
-        f"  energy up to    {before.band_hz / 1000:5.1f} -> "
-        f"{after.band_hz / 1000:5.1f} kHz",
+        f"  the {_band_name(CUE_BAND)} cue band "
+        f"{before.cue_band_db:5.0f} -> {after.cue_band_db:5.0f} dB",
         "",
     ]
     added = []
-    if after.octave_jumps_per_s - before.octave_jumps_per_s > ADDED_JUMPS_PER_S:
+    if (after.octave_jumps_per_s - before.octave_jumps_per_s > ADDED_JUMPS_PER_S
+            or (after.octave_jumps_per_s > INVENTED_JUMPS_PER_S
+                and after.octave_jumps_per_s
+                > before.octave_jumps_per_s * INVENTED_JUMPS_RATIO)):
         added.append(
-            f"the engine adds {after.octave_jumps_per_s - before.octave_jumps_per_s:.1f} "
+            f"the engine adds {after.octave_jumps_per_s - before.octave_jumps_per_s:.2f} "
             "octave jumps a second that the recording did not have. Those are "
             "grains at twice or half the right spacing, and that is the "
             "robotic sound itself.")
@@ -303,27 +353,38 @@ def compare(before: Report, after: Report) -> str:
     return "\n".join(lines)
 
 
-def _rolloff(audio: np.ndarray, sample_rate: int,
-             share: float = BAND_SHARE) -> float:
-    """Frequency below which ``share`` of the energy sits, in Hz.
-
-    A plain descriptive number: see :data:`BAND_SHARE` for why it carries no
-    verdict.
-    """
-    if audio.size < 4096 or not sample_rate:
-        return 0.0
+def _spectrum(audio: np.ndarray, sample_rate: int):
+    """Averaged power spectrum, and the frequency of each bin."""
     n = 1 << 12
+    if audio.size < n or not sample_rate:
+        return None, None
     window = np.hanning(n)
-    steps = max(1, (audio.size - n) // (n // 2))
     power = np.zeros(n // 2 + 1)
-    for i in range(steps):
+    for i in range(max(1, (audio.size - n) // (n // 2))):
         start = i * (n // 2)
         power += np.abs(np.fft.rfft(audio[start:start + n] * window)) ** 2
-    total = power.sum()
-    if total <= 0:
-        return 0.0
-    below = np.searchsorted(np.cumsum(power) / total, share)
-    return float(min(below, power.size - 1) * sample_rate / n)
+    return power, np.fft.rfftfreq(n, 1.0 / sample_rate)
+
+
+def _band_levels(audio: np.ndarray, sample_rate: int) -> tuple:
+    """Energy in each of :data:`BANDS`, in dB below the loudest of them.
+
+    Relative to the loudest band rather than to full scale, so it says where
+    the voice stops without also saying how loud somebody was speaking.
+    """
+    power, freq = _spectrum(audio, sample_rate)
+    if power is None:
+        return tuple(-99.0 for _ in BANDS)
+    energy = [float(power[(freq >= lo) & (freq < hi)].sum()) for lo, hi in BANDS]
+    top = max(energy)
+    if top <= 0:
+        return tuple(-99.0 for _ in BANDS)
+    return tuple(10.0 * np.log10(e / top) if e > 0 else -99.0 for e in energy)
+
+
+def _band_name(band) -> str:
+    lo, hi = band
+    return f"{lo / 1000:g}-{hi / 1000:g}k"
 
 
 def _complaints(r: Report) -> list[str]:
@@ -348,6 +409,16 @@ def _complaints(r: Report) -> list[str]:
             f"{CLEAN_FLIPS_PER_S:.0f} for speech. That is the decision "
             "flapping rather than the speaker articulating, and it switches "
             "the converted and untouched paths in and out mid-word.")
+    if r.cue_band_db < CUE_BAND_FLOOR_DB:
+        notes.append(
+            f"there is almost nothing in the {_band_name(CUE_BAND)}Hz band "
+            f"-- {r.cue_band_db:.0f} dB below the loudest, against -20 for a "
+            "full-band voice and -24 for a telephone line. F2, F3 and every "
+            "consonant live there, and they are the cue the ear uses after "
+            "pitch. Raising the pitch of a recording like this cannot make it "
+            "sound female, because what says female has already been removed "
+            "-- and the formant shift has nothing left to act on. Something "
+            "before this program is band-limiting the microphone.")
     if r.headroom_db < QUIET_HEADROOM_DB:
         notes.append(
             f"the quiet between the words is only {r.headroom_db:.0f} dB "
