@@ -232,7 +232,7 @@ jobs:
             "unsigned that also replaces itself unasked is not a thing to ship.",
             "",
             "``--method world`` converts by taking the voice apart and rebuilding it",
-            "rather than by moving the recorded waveform. It costs 160 ms of delay",
+            "rather than by moving the recorded waveform. It costs 75 ms of delay",
             "instead of 60, and in exchange it is exact at any shift and holds",
             "together on a sung note, where the waveform method tears above about",
             "eight semitones. The window offers both under **Engine**.",
