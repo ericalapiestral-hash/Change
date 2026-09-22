@@ -621,7 +621,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_device_options(live)
     live.add_argument("--method", choices=("psola", "world"), default="psola",
                       help="psola is 60 ms of delay and the more faithful "
-                           "below about 8 semitones; world is 160 ms and the "
+                           "below about 8 semitones; world is 75 ms and the "
                            "only one that holds together above that, or when "
                            "the voice is sung")
     live.add_argument("--channels", type=int, default=1, help="output channels")

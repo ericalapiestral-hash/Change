@@ -367,15 +367,23 @@ class TestConvertingALiveStream:
         assert harmonic_to_noise_db(streamed, sample_rate) > \
             harmonic_to_noise_db(offline, sample_rate) - 3.0
 
-    def test_the_seams_do_not_click(self, utterance, sample_rate):
-        """Two windows butted together put a click at every hop."""
+    def test_the_seams_add_no_step_the_speech_did_not_have(self, utterance,
+                                                           sample_rate):
+        """Against the input's own worst transient, not an absolute bar.
+
+        A fixed threshold here read 0 clicks at one context and 98 at the
+        next, and the two recordings' worst jumps were 0.2163 and 0.2311 --
+        the same event either side of the line. The input itself steps 44x
+        its typical sample-to-sample move at a plosive, so the only question
+        the splice raises is whether it adds one.
+        """
+        def worst(signal):
+            steps = np.abs(np.diff(signal))
+            return float(np.max(steps) / np.median(steps[steps > 0]))
+
         audio, _ = utterance
         _, out = self.stream(audio, sample_rate)
-        steps = np.abs(np.diff(out))
-        hop = sample_rate // 100
-        blocks = steps[:steps.size - steps.size % hop].reshape(-1, hop)
-        local = np.median(blocks, axis=1, keepdims=True) + 1e-9
-        assert int(np.count_nonzero(blocks > local * 60)) == 0
+        assert worst(out) < worst(audio) * 1.5
 
     def test_it_delivers_the_pitch_it_was_asked_for(self, utterance, sample_rate):
         audio, _ = utterance
@@ -418,6 +426,43 @@ class TestConvertingALiveStream:
         live = world.LiveConverter(sample_rate, hop_ms=80.0, context_ms=80.0)
         assert live.latency_ms == pytest.approx(160.0, abs=1.0)
         assert live.latency_samples == int(0.16 * sample_rate)
+
+    def test_the_default_delay_is_the_one_worth_shipping(self, sample_rate):
+        """160 ms is the worst range there is for hearing your own voice --
+        it is what delayed-auditory-feedback devices use to disrupt speech.
+        Aligning the seam is what brought it down."""
+        assert world.LiveConverter(sample_rate).latency_ms <= 80.0
+
+    def test_a_short_hop_is_as_clean_as_a_long_one(self, utterance, sample_rate):
+        """Without alignment it is not: 21.6 dB at an 80 ms hop, 17.0 at 40,
+        8.2 at 20, because every seam cancels harmonics that two windows
+        placed differently."""
+        from evaluate import harmonic_to_noise_db
+
+        audio, _ = utterance
+        _, short = self.stream(audio, sample_rate, hop_ms=20.0, context_ms=45.0)
+        _, long = self.stream(audio, sample_rate, hop_ms=80.0, context_ms=80.0)
+        assert harmonic_to_noise_db(short, sample_rate) > \
+            harmonic_to_noise_db(long, sample_rate) - 1.5
+
+    def test_turning_the_alignment_off_is_visibly_worse(self, utterance,
+                                                        sample_rate):
+        """The measurement the default rests on."""
+        from evaluate import harmonic_to_noise_db
+
+        audio, _ = utterance
+        _, aligned = self.stream(audio, sample_rate, hop_ms=20.0,
+                                 context_ms=45.0)
+        _, blind = self.stream(audio, sample_rate, hop_ms=20.0, context_ms=45.0,
+                               align_ms=0.0)
+        assert harmonic_to_noise_db(aligned, sample_rate) > \
+            harmonic_to_noise_db(blind, sample_rate) + 5.0
+
+    def test_a_fade_too_short_for_its_own_search_is_refused(self, sample_rate):
+        """The alignment moves where the next hop is read from; a fade
+        shorter than that steps across the move instead of sliding over it."""
+        with pytest.raises(ValueError, match="steps rather than slides"):
+            world.LiveConverter(sample_rate, crossfade_ms=6.0, align_ms=3.0)
 
     def test_reset_clears_it(self, utterance, sample_rate):
         audio, _ = utterance

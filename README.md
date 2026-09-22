@@ -497,7 +497,7 @@ natvox live --method world --pitch 10 --formant 2.6
 ```
 
 or the **Engine** box in the window, which offers *Natural (60 ms)* and
-*Rebuilt (160 ms) — for big shifts and singing*. Switching restarts the audio
+*Rebuilt (75 ms) — for big shifts and singing*. Switching restarts the audio
 on purpose: the two have different delays, and swapping one for the other
 under a live stream would move the conversion delay by a tenth of a second
 mid-sentence.
@@ -550,19 +550,46 @@ times over, so ×1.3 cannot run live at all and ×9.4 leaves room for a machine
 that is also doing something else. End to end it streams at **×2.9 real time
 with no clicks at the seams**.
 
-The delay is the price, and it does not go away by asking:
+**The delay was 160 ms, and 160 ms is the worst number there is.** Delayed
+auditory feedback disrupts speech most severely between about 150 and 200 ms —
+that range is what the devices built to interrupt people use. Anybody
+monitoring their own converted voice at 160 ms would struggle to talk, let
+alone sing.
 
-| hop / context | delay | HNR |
+It is **75 ms** now, and it got there by fixing the reason a short hop was
+expensive rather than by paying for one.
+
+`pw.synthesize` starts its phase accumulator at zero on every call, so two
+windows covering the same instant put their pitch pulses in different places.
+Cross-fading between them cancels harmonics, and the shorter the hop, the more
+seams there are to cancel at:
+
+| hop | straight cross-fade | seam aligned first |
 |---|---|---|
-| 80 / 80 ms | 160 ms | 21.6 dB |
-| 60 / 60 ms | 120 ms | 19.6 dB |
-| 40 / 40 ms | 80 ms | 15.4 dB |
-| 30 / 30 ms | 60 ms | **no voice at all** |
+| 80 ms | 21.6 dB | **23.5 dB** |
+| 40 ms | 17.0 dB | **23.5 dB** |
+| 20 ms | 8.2 dB | **23.6 dB** |
 
-Below about three pitch periods of context the vocoder has nothing to
-estimate a vocal tract from, and what comes back is at the right level with
-no periodicity in it. That is a refusal now, with the arithmetic in the
-message, rather than a setting somebody can quietly ruin the sound with.
+Sliding the incoming window against the tail already written, and taking the
+offset where they agree best, makes the quality **flat in the hop** — and
+equal to converting the whole file in one go. So the hop can be short, and the
+hop is half the delay. `hop 30 / context 45 / fade 20 / align 3` gives 75 ms
+at ×2.1 real time and 23.4 dB, against 160 ms and 21.6 dB before.
+
+Two constraints hold it together, both measured rather than assumed. The fade
+must be at least six times the alignment search, or it steps across the move
+instead of sliding over it. And below about three pitch periods of context the
+vocoder has nothing to estimate a vocal tract from: what comes back is at the
+right level with no periodicity in it at all. Both are refusals now, with the
+arithmetic in the message.
+
+**There was never a click problem.** A fixed threshold on sample-to-sample
+steps read 0 at one context setting and 98 at the next, and the two
+recordings' worst jumps were 0.2163 and 0.2311 — the same event either side of
+a line. The input's own worst transient is 44× its typical step, at a plosive;
+offline conversion gives 45× and the spliced stream 49×, all at the same
+instant. The splice adds nothing. The test compares against the input now
+instead of against a number.
 
 **Moving a slider does not rebuild it.** The window function reads its
 settings every hop, so a change lands inside one — 80 ms — with nothing to

@@ -73,7 +73,7 @@ class Settings:
     remote_url: str = ""
     use_remote: bool = False
     #: Which engine converts.  "psola" moves the recorded waveform and costs
-    #: 60 ms; "world" takes the voice apart and rebuilds it, costs 160 ms, and
+    #: 60 ms; "world" takes the voice apart and rebuilds it, costs 75 ms, and
     #: is the only one that holds together past about 8 semitones or when the
     #: voice is sung.
     method: str = "psola"

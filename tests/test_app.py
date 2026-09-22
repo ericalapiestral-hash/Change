@@ -848,11 +848,14 @@ class TestTheStudioCanHoldEitherEngine:
         Settings(voice="female", method="world").save(path)
         assert Settings.load(path).method == "world"
 
-    def test_it_costs_more_delay_and_says_so(self, voice_audio):
+    def test_it_costs_more_delay_than_the_waveform_engine(self, voice_audio):
+        """75 ms against about 60. It was 160 until the seam was aligned, and
+        160 is the worst number there is for hearing your own voice."""
         pytest.importorskip("pyworld")
 
         studio = Studio(self.settings())
         studio.start(OfflineBackend(voice_audio, 256, realtime=True, loop=True))
         time.sleep(0.4)
-        assert studio._metered.converter.latency_ms > 100.0
+        delay = studio._metered.converter.latency_ms
+        assert 60.0 < delay <= 80.0, delay
         studio.stop()

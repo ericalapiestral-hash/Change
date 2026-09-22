@@ -583,7 +583,7 @@ class TestChoosingTheEngine:
     def test_both_are_offered_with_their_cost_in_the_label(self, window):
         labels = [window.method.itemText(i) for i in range(window.method.count())]
         assert any("60 ms" in t for t in labels)
-        assert any("160 ms" in t for t in labels)
+        assert any("75 ms" in t for t in labels)
         assert any("singing" in t for t in labels)
 
     def test_choosing_one_sets_it_and_says_what_it_is(self, window):

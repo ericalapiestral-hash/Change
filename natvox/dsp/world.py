@@ -66,6 +66,14 @@ F0_CEIL = 1100.0
 #: refusal rather than a setting somebody can quietly ruin the sound with.
 MIN_CONTEXT_PERIODS = 3.0
 
+#: How much longer the cross-fade must be than the alignment search.
+#:
+#: Aligning the seam moves where the next hop is read from, so the fade has
+#: to be long enough to slide over that move rather than step across it.
+#: Measured at hop 30 ms: a 12 ms fade over a 3 ms search stepped, 20 ms over
+#: the same search did not.
+MIN_FADE_PER_ALIGN = 6
+
 #: The output must not leave here above full scale.
 #:
 #: Resynthesis is not gain-preserving: a note peaking at 0 dBFS came back at
@@ -191,36 +199,45 @@ class LiveConverter:
     """WORLD conversion over a continuous stream, block by block.
 
     The vocoder wants a whole utterance; a callback hands it 256 samples at a
-    time.  The gap between those is a windowing problem, and it is the same
-    one every block-based conversion model has, so this leans on the machinery
-    already written for those: a hop with context on both sides that is
-    analysed and then discarded, and a cross-fade between consecutive outputs,
-    because two windows synthesised independently do not agree at their seam
-    and butting them together puts a click at every hop.
+    time.  So the stream is cut into windows -- a hop with context on each
+    side that is analysed and then discarded -- and the converted hops are
+    spliced back together.
+
+    **The splice is the whole problem.**  ``pw.synthesize`` starts its phase
+    accumulator at zero on every call, so two windows covering the same
+    instant put their pitch pulses in different places.  Cross-fading between
+    them cancels harmonics, and the shorter the hop the more seams there are
+    to cancel at.  Measured at +10 semitones, cross-fading straight:
+
+        hop 80 ms   21.6 dB        hop 40 ms   17.0 dB        hop 20 ms   8.2 dB
+
+    Sliding the incoming window against the tail already written, and taking
+    the offset where they agree best, removes it entirely:
+
+        hop 80 ms   23.5 dB        hop 40 ms   23.5 dB        hop 20 ms   23.6 dB
+
+    -- flat in the hop, and equal to converting the whole file at once.  That
+    is what makes a short hop affordable, and the hop is half the delay.
 
     Interface-compatible with :class:`~natvox.engine.VoiceChanger`, so the
     live path can hold either.
 
-    **It converts at 24 kHz whatever the stream's rate is.**  Measured on the
-    reference utterance at +10 semitones, with the resampling in and out
-    counted:
+    **It converts at 24 kHz whatever the stream's rate is**, which costs a
+    tenth of a decibel and buys seven times the speed:
 
         48000 Hz internal   x1.3 real time   23.5 dB
         24000 Hz internal   x9.4 real time   23.4 dB
 
-    Seven times the speed for a tenth of a decibel.  The window is analysed
-    three times over -- hop plus context on each side -- so x1.3 is not
-    enough to run live at all, and x9.4 leaves room for a machine that is
-    also doing something else.
+    The window is analysed ``(hop + 2*context) / hop`` times over, so that
+    headroom is what a short hop spends.
     """
 
     def __init__(self, sample_rate: int, pitch_semitones: float = 0.0,
                  formant_semitones: float = 0.0, breathiness: float = 0.0,
-                 hop_ms: float = 80.0, context_ms: float = 80.0,
-                 crossfade_ms: float = 20.0, internal_rate: int = INTERNAL_RATE,
+                 hop_ms: float = 30.0, context_ms: float = 45.0,
+                 crossfade_ms: float = 20.0, align_ms: float = 3.0,
+                 internal_rate: int = INTERNAL_RATE,
                  f0_min: float = 70.0, f0_max: float = 800.0) -> None:
-        from ..neural.rvc import StreamingNeuralConverter
-
         _world()                                # fail here, not in the callback
         needed = 1000.0 * MIN_CONTEXT_PERIODS / max(float(f0_min), 1e-6)
         if context_ms < needed:
@@ -235,41 +252,50 @@ class LiveConverter:
         self.formant_semitones = float(formant_semitones)
         self.breathiness = float(breathiness)
         self._f0_min, self._f0_max = float(f0_min), float(f0_max)
-        self._stream = StreamingNeuralConverter(
-            self.sample_rate, self._convert_window,
-            hop_seconds=hop_ms / 1000.0, context_seconds=context_ms / 1000.0,
-            crossfade_seconds=crossfade_ms / 1000.0,
-            # The vocoder does its own pitch work; letting the wrapper shift
-            # the F0 it passes as well would apply the interval twice.
-            pitch_shift_semitones=0.0, f0_min=f0_min, f0_max=f0_max)
+
+        per_ms = self.sample_rate / 1000.0
+        self.hop = max(1, int(hop_ms * per_ms))
+        self.context = max(1, int(context_ms * per_ms))
+        self.crossfade = max(2, int(crossfade_ms * per_ms))
+        self.align = max(0, int(align_ms * per_ms))
+        if self.crossfade + self.align > self.context:
+            raise ValueError("crossfade plus alignment must fit in the context")
+        if self.crossfade < MIN_FADE_PER_ALIGN * self.align:
+            raise ValueError(
+                f"crossfade_ms must be at least {MIN_FADE_PER_ALIGN} times "
+                f"align_ms: the alignment moves where the next hop is read "
+                f"from, and a fade shorter than that steps rather than slides")
+        self._fade = np.hanning(2 * self.crossfade)
+        self.reset()
 
     # -------------------------------------------------------------- interface
     @property
     def latency_samples(self) -> int:
-        return self._stream.latency_samples
+        """One hop to fill the window, plus the context that follows it."""
+        return self.hop + self.context
 
     @property
     def latency_ms(self) -> float:
         return 1000.0 * self.latency_samples / self.sample_rate
 
-    def process(self, block: np.ndarray) -> np.ndarray:
-        return self._stream.process(block)
-
-    def flush(self) -> np.ndarray:
-        """Whatever is still inside, so an offline caller loses no tail."""
-        return self._stream.process(np.zeros(self.latency_samples))
-
     def reset(self) -> None:
-        self._stream.reset()
+        # Primed with one context of silence, so the first window is ready
+        # after hop + context samples rather than hop + 2*context.  Without
+        # it the output queue runs dry once, early, and the only thing left
+        # to do is insert silence -- which shifts everything after it, by a
+        # different amount for every block size.
+        self._held = np.zeros(self.context)     # input not yet consumed
+        self._tail = np.zeros(0)                # overlap awaiting its partner
+        self._out = np.zeros(self.latency_samples)
+        self._primed = False
 
     def set(self, profile) -> None:
         """Move the settings under a running stream.
 
         The window function reads these every hop, so a change lands within
-        one of them -- 80 ms at the defaults -- with no rebuild and nothing to
-        cross-fade.  What cannot move is the tracked pitch range: it sizes the
-        tracker and the context around it, and changing those mid-stream would
-        move the delay under whoever is listening.
+        one of them with no rebuild and nothing to cross-fade.  What cannot
+        move is the tracked pitch range: it sizes the context, and changing
+        that mid-stream would move the delay under whoever is listening.
         """
         if (float(profile.f0_min) != self._f0_min
                 or float(profile.f0_max) != self._f0_max):
@@ -281,24 +307,83 @@ class LiveConverter:
         self.formant_semitones = float(profile.formant_semitones)
         self.breathiness = float(profile.breathiness)
 
-    # ----------------------------------------------------------------- inside
-    def _convert_window(self, audio: np.ndarray, sample_rate: int,
-                        f0: np.ndarray) -> np.ndarray:
-        """One window, in and out at the stream's rate.
+    def process(self, block: np.ndarray) -> np.ndarray:
+        x = np.asarray(block, dtype=np.float64).reshape(-1)
+        if not self._primed:
+            self._out = np.zeros(self.latency_samples)
+            self._primed = True
+        self._held = np.concatenate([self._held, x])
 
-        ``f0`` is what the wrapper measured; the vocoder re-estimates it on
-        the window it is actually given, which is the one that includes the
-        context.
+        span = self.hop + 2 * self.context
+        while self._held.size >= span:
+            self._emit(self._held[:span])
+            self._held = self._held[self.hop:]
+
+        if self._out.size < x.size:
+            self._out = np.concatenate(
+                [np.zeros(x.size - self._out.size), self._out])
+        out, self._out = self._out[:x.size], self._out[x.size:]
+        return out
+
+    def flush(self) -> np.ndarray:
+        """Whatever is still inside, so an offline caller loses no tail."""
+        return self.process(np.zeros(self.latency_samples))
+
+    # ----------------------------------------------------------------- inside
+    def _emit(self, window: np.ndarray) -> None:
+        converted = self._convert(window)
+        keep = self.hop + self.crossfade
+        if self._tail.size != self.crossfade:
+            # The first hop follows the silence the stream was primed with, and
+            # walking straight out of it is a step. Fade in over the same
+            # length every other seam is faded over.
+            core = converted[self.context:self.context + keep].copy()
+            core[:self.crossfade] *= self._fade[:self.crossfade]
+            self._out = np.concatenate([self._out, core[:self.hop]])
+            self._tail = core[self.hop:].copy()
+            return
+        offset = self.context + self._best_offset(converted)
+        core = converted[offset:offset + keep]
+        if core.size < keep:                    # too near the end to slide
+            core = converted[self.context:self.context + keep]
+        head = (self._tail * self._fade[self.crossfade:]
+                + core[:self.crossfade] * self._fade[:self.crossfade])
+        self._out = np.concatenate([self._out, head, core[self.crossfade:self.hop]])
+        self._tail = core[self.hop:].copy()
+
+    def _best_offset(self, converted: np.ndarray) -> int:
+        """Where this window agrees with what has already been written.
+
+        Normalised, so it picks the offset whose *shape* matches rather than
+        whichever one happens to be loudest.
         """
-        if self.internal_rate == sample_rate:
-            return convert(audio, sample_rate, self.pitch_semitones,
+        if not self.align:
+            return 0
+        best, best_score = 0, -np.inf
+        norm = np.linalg.norm(self._tail)
+        if norm < 1e-12:
+            return 0
+        for lag in range(-self.align, self.align + 1):
+            start = self.context + lag
+            segment = converted[start:start + self.crossfade]
+            if segment.size < self.crossfade:
+                continue
+            score = float(self._tail.dot(segment)
+                          / (np.linalg.norm(segment) + 1e-12))
+            if score > best_score:
+                best_score, best = score, lag
+        return best
+
+    def _convert(self, window: np.ndarray) -> np.ndarray:
+        if self.internal_rate == self.sample_rate:
+            return convert(window, self.sample_rate, self.pitch_semitones,
                            self.formant_semitones, self.breathiness, fast=True)
-        small = _resample(audio, sample_rate, self.internal_rate)
+        small = _resample(window, self.sample_rate, self.internal_rate)
         done = convert(small, self.internal_rate, self.pitch_semitones,
                        self.formant_semitones, self.breathiness, fast=True)
-        back = _resample(done, self.internal_rate, sample_rate)
-        out = np.zeros(audio.size)
-        take = min(audio.size, back.size)
+        back = _resample(done, self.internal_rate, self.sample_rate)
+        out = np.zeros(window.size)
+        take = min(window.size, back.size)
         out[:take] = back[:take]
         return out
 

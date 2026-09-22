@@ -200,7 +200,7 @@ class Window(QtWidgets.QWidget):
 
         self.method = QtWidgets.QComboBox()
         self.method.addItem("Natural (60 ms)", "psola")
-        self.method.addItem("Rebuilt (160 ms) -- for big shifts and singing",
+        self.method.addItem("Rebuilt (75 ms) -- for big shifts and singing",
                             "world")
         self.method.setToolTip(
             "Natural moves the waveform you produced, which is the more "
@@ -605,7 +605,7 @@ class Window(QtWidgets.QWidget):
         if was_running:
             self.start()
         self.report("Rebuilt: takes the voice apart and synthesises a new "
-                    "one. 160 ms of delay, and the only one that holds "
+                    "one. 75 ms of delay, and the only one that holds "
                     "together on a sung note."
                     if chosen == "world" else
                     "Natural: moves the waveform you produced. 60 ms of "
