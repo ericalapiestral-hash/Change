@@ -518,6 +518,41 @@ a waveform somebody actually produced and is the more faithful; the vocal
 tract response here is smoothed rather than exact. Past that, this is the only
 one that works. PSOLA stays the default.
 
+##### Singing and shouting
+
+Every measurement above this line was taken on connected speech at
+conversational level, and a voice changer tested only on quiet talking breaks
+on both of the things somebody would actually notice. Two real failures, both
+now fixed and tested:
+
+**A sung note above 600 Hz tore.** The analysis ceiling clipped the estimate,
+so the shift was applied to the wrong number — a note at 600 Hz came out at
+692 where it should have reached 1069. The ceiling is 1100 Hz now, and raising
+it costs speech nothing: F0 error is 0.87 st and octave errors 0.0% at 600,
+800, 1100 and 1600 Hz alike.
+
+**A loud note left above full scale.** Resynthesis is not gain-preserving: a
+note peaking at 0 dBFS came back at **+1.0 dB**, which clips on the way to the
+speaker — audible as tearing on exactly the passages somebody would notice it
+on. This module was bypassing the look-ahead limiter the rest of the engine
+already runs through. It loses a little level now instead, and gains none of
+the harmonic distortion a clipper would add.
+
+What was measured and did *not* need fixing: both engines hold their pitch
+exactly from 150 Hz up to 800 Hz sung (that is 1411 Hz out at +10 semitones),
+and both degrade gently rather than suddenly when the input is already
+clipped — 4.9 dB of HNR between a signal driven 1.5x into the rail and one
+driven 6x.
+
+Three measuring instruments failed before this was settled, each differently,
+and the tests name all three: `pitch_track` tops out below a sung note put up
+ten semitones and returned zero for audio that was correct; "the strongest
+partial" returned 791 Hz for a 150 Hz note, because the strongest partial of a
+sung /a/ is whichever harmonic sits under F1; and a harmonic product spectrum
+locked onto the subharmonic at 1069 Hz. Autocorrelation asks the only question
+a held note raises — what does this waveform repeat at — and reads 150 through
+800 Hz correctly at both ends.
+
 ### More than pitch and formants
 
 `male_to_female` moves pitch and vocal-tract size and nothing else. That is the

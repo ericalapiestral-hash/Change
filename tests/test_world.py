@@ -209,3 +209,131 @@ class TestTheFastPath:
             world.analyse(audio, sample_rate, fast=fast)
             return time.perf_counter() - t
         assert clock(True) < clock(False)
+
+
+def sung(sample_rate, f0_hz, seconds=1.5, level=0.3, vibrato_st=0.4, seed=3):
+    """A sustained sung note: steady pitch, vibrato, a real vowel."""
+    from synth_speech import VOWELS, glottal_source, vocal_tract
+
+    rng = np.random.default_rng(seed)
+    n = int(sample_rate * seconds)
+    t = np.arange(n) / sample_rate
+    f0 = f0_hz * 2 ** (vibrato_st / 12 * np.sin(2 * np.pi * 5.5 * t))
+    source = glottal_source(f0, sample_rate, rng, jitter=0.006, shimmer=0.02)
+    vowel = VOWELS["a"]
+    y = vocal_tract(source, np.stack([np.full(n, vowel[i]) for i in range(3)]),
+                    sample_rate)
+    return np.ascontiguousarray(y / max(np.max(np.abs(y)), 1e-9) * level)
+
+
+def fundamental(y, sample_rate, lo=100.0, hi=2500.0):
+    """The fundamental of a sustained note, by autocorrelation.
+
+    Three instruments preceded this one and each failed differently. The
+    repository's pitch_track tops out below a sung note put up ten semitones
+    and returned zero for audio that was correct, which read as the engine
+    breaking. "The strongest partial" returned 791 Hz for a 150 Hz note,
+    because the strongest partial of a sung /a/ is whichever harmonic sits
+    under F1. A harmonic product spectrum then locked onto the subharmonic at
+    1069 Hz, where a handful of tiny factors beat the true peak's product.
+
+    Autocorrelation asks the only question that matters for a held note --
+    what does this waveform repeat at -- and has no spectrum to be fooled by.
+    """
+    seg = np.asarray(y, dtype=np.float64)
+    seg = seg[len(seg) // 3:len(seg) // 3 + sample_rate // 2]
+    if seg.size < 4 * int(sample_rate / lo):
+        return 0.0
+    seg = seg - seg.mean()
+    if seg.dot(seg) < 1e-18:
+        return 0.0
+    n = 1 << int(np.ceil(np.log2(2 * seg.size)))
+    spectrum = np.fft.rfft(seg * np.hanning(seg.size), n)
+    acf = np.fft.irfft(np.abs(spectrum) ** 2, n)[:seg.size]
+    lo_lag, hi_lag = int(sample_rate / hi), int(sample_rate / lo)
+    window = acf[lo_lag:hi_lag + 1]
+    if window.size == 0 or acf[0] <= 0:
+        return 0.0
+    return float(sample_rate / (lo_lag + int(np.argmax(window))))
+
+
+class TestSingingAndShouting:
+    """A voice that is only ever tested on quiet talking breaks on both.
+
+    Everything above this class was measured on connected speech at
+    conversational level.  Somebody who wants to sing through it, or raise
+    their voice, meets two failures that speech never reaches.
+    """
+
+    @pytest.mark.parametrize("hz", [150, 250, 400, 600, 800])
+    def test_a_sung_note_is_moved_by_what_was_asked(self, sample_rate, hz):
+        """The ratio, measured with one instrument on both ends.
+
+        Not the absolute pitch: at 1069 Hz the harmonic product spectrum
+        locks onto the subharmonic, and a test that compared against an
+        absolute number would have been testing that failure rather than the
+        engine. The same bias on both ends cancels.
+        """
+        note = sung(sample_rate, float(hz))
+        out = world.convert(note, sample_rate, pitch_semitones=10.0,
+                            formant_semitones=2.0)
+        before = fundamental(note, sample_rate, hi=2500.0)
+        after = fundamental(out, sample_rate, hi=2500.0)
+        assert before > 0 and after > 0
+        assert 12 * np.log2(after / before) == pytest.approx(10.0, abs=0.4)
+
+    def test_the_ceiling_is_set_for_singing_not_speaking(self):
+        """At 600 Hz a sung note came out at 692 where it should have reached
+        1069: the estimate is clipped at the ceiling and the shift is then
+        applied to the wrong number. That is a voice tearing, not a voice
+        going high."""
+        assert world.F0_CEIL >= 1000.0
+
+    def test_raising_it_costs_speech_nothing(self, utterance, sample_rate):
+        """Which is why it could be raised at all."""
+        audio, _ = utterance
+        f0, _, _ = world.analyse(audio, sample_rate)
+        voiced = f0[f0 > 0]
+        assert voiced.size
+        assert float(np.mean(voiced > 400.0)) < 0.02, "no octave errors upward"
+
+    @pytest.mark.parametrize("level", [0.3, 0.9, 1.0])
+    def test_nothing_ever_leaves_above_full_scale(self, sample_rate, level):
+        """Resynthesis is not gain-preserving: a note peaking at 0 dBFS came
+        back at +1.0 dB, which clips on the way to the speaker."""
+        note = np.clip(sung(sample_rate, 250.0, level=1.0) * level, -1.0, 1.0)
+        out = world.convert(note, sample_rate, pitch_semitones=10.0,
+                            formant_semitones=2.0)
+        assert np.max(np.abs(out)) <= 1.0
+
+    def test_it_loses_level_rather_than_gaining_distortion(self, sample_rate):
+        """A clipper would hold the ceiling too, and tear the voice doing it."""
+        from evaluate import harmonic_to_noise_db
+
+        quiet = world.convert(sung(sample_rate, 250.0, level=0.2), sample_rate,
+                              pitch_semitones=10.0)
+        loud = world.convert(sung(sample_rate, 250.0, level=1.0), sample_rate,
+                             pitch_semitones=10.0)
+        assert harmonic_to_noise_db(loud, sample_rate) > \
+            harmonic_to_noise_db(quiet, sample_rate) - 3.0
+
+    def test_a_clipped_input_degrades_gently(self, sample_rate):
+        """Shouting into a microphone clips before this ever sees it."""
+        from evaluate import harmonic_to_noise_db
+
+        note = sung(sample_rate, 250.0, level=1.0)
+        gentle = world.convert(np.clip(note * 1.5, -1, 1), sample_rate,
+                               pitch_semitones=10.0)
+        brutal = world.convert(np.clip(note * 6.0, -1, 1), sample_rate,
+                               pitch_semitones=10.0)
+        # 4.9 dB, measured. Driving a signal six times into the rail is not
+        # free and the test says what it actually costs rather than the round
+        # number that would have been convenient.
+        assert harmonic_to_noise_db(brutal, sample_rate) > \
+            harmonic_to_noise_db(gentle, sample_rate) - 5.5
+
+    def test_the_limiter_changes_the_level_and_nothing_else(self, sample_rate):
+        """Its own delay is removed, so a quiet signal comes back untouched."""
+        quiet = sung(sample_rate, 250.0, level=0.05)
+        assert np.max(np.abs(quiet)) < world.CEILING
+        assert world.limit(quiet, sample_rate) == pytest.approx(quiet, abs=1e-9)

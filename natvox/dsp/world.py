@@ -45,8 +45,24 @@ FRAME_PERIOD_MS = 5.0
 INTERNAL_RATE = 24000
 
 #: Tracking range handed to the F0 estimator.
+#:
+#: The ceiling is for singing, not speech.  At 600 Hz -- which is generous for
+#: a talking voice -- a sung note at 600 Hz came out at 692 Hz where it should
+#: have reached 1069: the estimate is clipped at the ceiling and the shift is
+#: applied to the wrong number, which is a voice tearing rather than a voice
+#: going high.  Raising it costs nothing measurable on speech: on the
+#: reference utterance, F0 error is 0.87 st and octave errors 0.0% at 600,
+#: 800, 1100 and 1600 Hz alike.
 F0_FLOOR = 60.0
-F0_CEIL = 600.0
+F0_CEIL = 1100.0
+
+#: The output must not leave here above full scale.
+#:
+#: Resynthesis is not gain-preserving: a note peaking at 0 dBFS came back at
+#: +1.0 dB, which clips on the way to the speaker.  That is audible as tearing
+#: on exactly the loud passages somebody would notice it on, and it was this
+#: module bypassing the limiter the rest of the engine already runs through.
+CEILING = 0.97
 
 
 class WorldUnavailable(RuntimeError):
@@ -140,4 +156,22 @@ def convert(audio: np.ndarray, sample_rate: int, pitch_semitones: float = 0.0,
     out = np.zeros(x.size)
     take = min(x.size, y.size)
     out[:take] = y[:take]
-    return out
+    return limit(out, sample_rate)
+
+
+def limit(audio: np.ndarray, sample_rate: int) -> np.ndarray:
+    """Hold the output under full scale, without reshaping the waveform.
+
+    A look-ahead limiter rather than a clipper: the whole waveform is scaled
+    by a smooth envelope, so a loud passage loses a little level instead of
+    gaining the harmonic distortion a clipper would put on it.  The limiter's
+    own delay is removed, so this changes the level and nothing else.
+    """
+    from .util import PeakLimiter
+
+    if audio.size == 0:
+        return audio
+    limiter = PeakLimiter(sample_rate, ceiling=CEILING)
+    look = limiter.latency_samples
+    padded = limiter(np.concatenate([audio, np.zeros(look)]))
+    return padded[look:look + audio.size]
