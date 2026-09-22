@@ -85,6 +85,23 @@ jobs:
             }
           }
 
+      # pyworld is a C extension reached only through a lazy import, which is
+      # the exact shape of thing PyInstaller reports success for and then
+      # leaves out.  The window would offer the engine and refuse to run it.
+      - name: The vocoder survived the bundler
+        working-directory: packaging
+        run: |
+          $out = (.\dist\natvox\natvox-cli.exe process probe.wav vocoded.wav `
+                    --method world --pitch 10 --formant 2.6 2>&1 | Out-String)
+          Write-Host $out
+          if ($out -notmatch "analysis and resynthesis") {
+            throw "the vocoder is not in the bundle"
+          }
+          if (-not (Test-Path vocoded.wav)) { throw "it wrote nothing" }
+          $size = (Get-Item vocoded.wav).Length
+          Write-Host "wrote $size bytes"
+          if ($size -lt 100000) { throw "the output is too short to be audio" }
+
       # A runner has no sound card, so "nothing to list" is the right answer
       # and exit 1 is how both of these say it.  What is being checked is the
       # code underneath: enumerating host APIs, and reading the per-device
@@ -213,6 +230,12 @@ jobs:
             "swaps it in as the program exits. The window has a button for it. It never",
             "installs without being asked: this build is not code-signed, and something",
             "unsigned that also replaces itself unasked is not a thing to ship.",
+            "",
+            "``--method world`` converts by taking the voice apart and rebuilding it",
+            "rather than by moving the recorded waveform. It costs 160 ms of delay",
+            "instead of 60, and in exchange it is exact at any shift and holds",
+            "together on a sung note, where the waveform method tears above about",
+            "eight semitones. The window offers both under **Engine**.",
             "",
             "``natvox-cli.exe --diagnose your-file.wav`` measures a recording and says",
             "what looks wrong with it, and with a preset measures what the engine makes",

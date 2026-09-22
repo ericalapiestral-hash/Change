@@ -71,6 +71,7 @@ class TestItBuildsWhatItClaimsTo:
         publish = windows.index("Publish")
         for smoke in ("The console build runs",
                       "The diagnosis runs on a real file",
+                      "The vocoder survived the bundler",
                       "The update actually installs, on a throwaway copy"):
             assert windows.index(smoke) < publish, smoke
 
